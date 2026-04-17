@@ -1,0 +1,43 @@
+name: Nightingale Rosetta Stone – Automated Iteration
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  iterate:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      run: pip install numpy
+
+    - name: Run v12.8+ Search + Nightingale Hook
+      run: |
+        python -c '
+import prototype_v12_8 as proto
+print("=== Automated PR Test Started ===")
+results = proto.run_search_v12_8(generations=15, pop_size=32)
+print("Search complete. Fidelity ready for review.")
+print("Latent primitives extracted for swarm injection.")
+        '
+
+    - name: Nightingale Analysis Hook
+      run: |
+        python -c '
+import prototype_v12_8 as proto
+import numpy as np
+sr = 44100
+test_audio = np.sin(2 * np.pi * np.array([440, 550, 660])[:, None] * np.linspace(0, 1, sr)).sum(axis=0)
+analysis = proto.analyze_external_sound(test_audio, label="nightingale-test-chord")
+print(analysis)
+        '
