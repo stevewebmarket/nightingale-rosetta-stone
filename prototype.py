@@ -3,62 +3,58 @@
 # Originator: Stephen OConnor (@nightingalemap) – The Nightingale Mapping
 # Date: April 17, 2026
 # Live Hub: https://github.com/stevewebmarket/nightingale-rosetta-stone
-# v16.4 – Deprecation Fix, Refined Rhythm Lattice, CQT Normalization, Adaptive Enhancements
+# v16.4 – Improved Rhythm Lattice, Coherence, CQT Invariance, Broad Sound Handling
 # =============================================================================
 
 import librosa
 import numpy as np
 
+# Configuration parameters
+sr = 22050
+hop_length = 512
+
+# Available WAV files
 files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
 
-for file in files:
-    y, sr = librosa.load(file, sr=22050)
-    hop_length = 512
+def analyze_audio(file_path, sr, hop_length):
+    # Load audio
+    y, _ = librosa.load(file_path, sr=sr)
+    
+    # Compute onset envelope for rhythm analysis
     onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
     
-    # Improved tempo estimation with aggregate median for robustness
-    tempo = librosa.feature.rhythm.tempo(onset_envelope=onset_env, sr=sr, hop_length=hop_length, aggregate=np.median)
+    # Estimate tempo using corrected function (improved rhythm handling)
+    tempo = librosa.beat.tempo(onset_envelope=onset_env, sr=sr, hop_length=hop_length, aggregate=np.median)
     
-    print(f"Processing: {file}")
-    print(f"Estimated tempo: {tempo}")
+    # Improved rhythm lattice: Compute tempogram for multi-scale rhythm representation
+    tempogram = librosa.feature.tempogram(onset_envelope=onset_env, sr=sr, hop_length=hop_length)
+    # Enhance coherence by averaging tempogram across time for a lattice summary
+    rhythm_lattice = np.mean(tempogram, axis=1)  # Average over time for coherent rhythm profile
     
-    tempo_val = tempo[0]
+    # Compute CQT for frequency analysis
+    cqt = librosa.cqt(y, sr=sr, hop_length=hop_length, n_bins=84, bins_per_octave=12)
     
-    # Improved beat tracking with tempo hint for better coherence
-    _, beats = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr, hop_length=hop_length, bpm=tempo_val, tight=True)
-    print(f"Number of beats detected: {len(beats)}")
+    # Improve CQT invariance: Convert to log-amplitude for amplitude invariance
+    log_cqt = librosa.amplitude_to_db(np.abs(cqt))
     
-    # Improved rhythm lattice: use regular grid based on mean beat interval for better invariance and coherence
-    if len(beats) > 1:
-        mean_interval = np.mean(np.diff(beats))
-        grid = np.arange(beats[0], beats[-1] + mean_interval, mean_interval)
-        grid_points = len(grid)
-    else:
-        grid_points = len(beats)
-    print(f"Rhythm lattice grid points: {grid_points}")
+    # Further invariance: Fold to chroma for octave invariance
+    chroma = librosa.feature.chroma_cqt(C=np.abs(cqt), sr=sr, hop_length=hop_length)
+    # Enhance coherence by syncing chroma with onset envelope (resample to match lengths)
+    if chroma.shape[1] != len(onset_env):
+        chroma = librosa.util.sync(chroma, chroma.shape[1], len(onset_env))
+    coherent_chroma = np.mean(chroma * onset_env[np.newaxis, :], axis=1)  # Weighted average for coherence
     
-    # CQT with normalization for improved invariance to amplitude variations
-    cqt = librosa.cqt(y, sr=sr, hop_length=hop_length)
-    mag = np.abs(cqt)
-    max_mag = np.max(mag) if np.max(mag) > 0 else 1.0
-    mag_norm = mag / max_mag
-    print(f"CQT shape: {mag_norm.shape}")
+    # Broad sound handling: Normalize features for diverse inputs (e.g., birdsong vs. music)
+    normalized_rhythm = rhythm_lattice / np.max(rhythm_lattice + 1e-6)  # Normalize lattice
+    normalized_chroma = coherent_chroma / np.max(coherent_chroma + 1e-6)  # Normalize chroma
     
-    # Improved coherence score: sum of onset strengths at beats, normalized by number of beats for comparability
-    coherence_score = np.sum(onset_env[beats]) / max(1, len(beats))
-    print(f"Coherence score: {coherence_score}")
-    
-    # Improved adaptive mode for broader sound handling: check energy and rhythm stability
-    rms = librosa.feature.rms(y=y)
-    mean_rms = np.mean(rms)
-    energy_level = "High" if mean_rms > 0.1 else "Low"
-    
-    if len(beats) > 1:
-        ibi = np.diff(beats)
-        rhythm_stability = "Steady" if np.std(ibi) / np.mean(ibi) < 0.1 else "Variable"
-    else:
-        rhythm_stability = "Undefined"
-    
-    adaptive_mode = f"{energy_level} energy sound detected. Rhythm: {rhythm_stability}."
-    print(f"Adaptive mode: {adaptive_mode}")
-    print("Analysis complete.\n")
+    # Print summary for each file
+    print(f"Analysis for {file_path}:")
+    print(f"  Estimated Tempo: {tempo}")
+    print(f"  Rhythm Lattice Summary (first 5 values): {normalized_rhythm[:5]}")
+    print(f"  Coherent Chroma Profile: {normalized_chroma}")
+    print("")
+
+# Analyze each file
+for file in files:
+    analyze_audio(file, sr, hop_length)
