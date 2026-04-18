@@ -3,95 +3,118 @@
 # Originator: Stephen OConnor (@nightingalemap) – The Nightingale Mapping
 # Date: April 17, 2026
 # Live Hub: https://github.com/stevewebmarket/nightingale-rosetta-stone
-# v16.4 – Enhanced Rhythm Lattice Refinement + CQT Invariance Boost
+# v16.4 – Enhanced Rhythm Lattice, Coherence, CQT Invariance, Broad Sound Handling
 # =============================================================================
 
 import librosa
 import numpy as np
-from scipy.stats import entropy
-from sklearn.cluster import KMeans
+import scipy.signal
+import scipy.stats
 
-# Constants
-SR = 22050
-HOP_LENGTH = 512
-N_BINS = 384  # Increased for finer frequency resolution
-MIN_FREQ = 20.0
-N_OCTAVES = 8
+# List of available WAV files
+wav_files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
 
-# Available WAV files
-WAV_FILES = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
-
-def compute_spectral_centroid(y, sr):
-    centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
-    mean_centroid = np.mean(centroid)
-    if mean_centroid > 5000:
-        return "high-centroid"
-    elif mean_centroid > 2000:
+def classify_centroid(mean_centroid):
+    if mean_centroid < 1500:
+        return "low-centroid"
+    elif mean_centroid < 5000:
         return "mid-centroid"
     else:
-        return "low-centroid"
+        return "high-centroid"
 
-def detect_onsets(y, sr, hop_length=512):
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
-    onsets = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=hop_length, backtrack=True)
-    onset_times = librosa.frames_to_time(onsets, sr=sr, hop_length=hop_length)
-    return onset_times
-
-def compute_iois(onset_times):
-    iois = np.diff(onset_times)
-    iois = iois[iois > 0]
-    return iois
-
-def rhythm_coherence(iois):
-    if len(iois) < 2:
-        return 0.0
-    hist, bin_edges = np.histogram(iois, bins=50)
-    hist = hist / hist.sum()
-    return 1 - entropy(hist) / np.log(len(hist))
-
-def refined_rhythm_lattice(iois, n_clusters=3):
-    if len(iois) < 2:
+def compute_rhythm_lattice(onsets, sr, centroid_class):
+    if len(onsets) < 2:
         return 0.0, 0.0
-    iois = iois.reshape(-1, 1)
-    kmeans = KMeans(n_clusters=n_clusters, n_init=10).fit(iois)
-    base = np.mean(kmeans.cluster_centers_)
-    labels = kmeans.labels_
-    coherence = max([np.sum(labels == i) / len(labels) for i in range(n_clusters)])
-    return base, coherence
-
-def compute_cqt(y, sr, hop_length=512, n_bins=N_BINS, min_freq=MIN_FREQ):
-    cqt = librosa.cqt(y, sr=sr, hop_length=hop_length, n_bins=n_bins, fmin=min_freq, bins_per_octave=n_bins//N_OCTAVES)
-    cqt_mag = librosa.amplitude_to_db(np.abs(cqt))
-    return cqt_mag
-
-def cqt_shift_invariance(cqt, shifts=[1, 2, 4, 8]):
-    invariance_scores = []
-    for shift in shifts:
-        rolled = np.roll(cqt, shift, axis=1)
-        diff = np.mean(np.abs(cqt - rolled))
-        invariance_scores.append(1 / (1 + diff))  # Normalized invariance
-    return np.mean(invariance_scores)
-
-def analyze_audio(file_path):
-    y, sr = librosa.load(file_path, sr=SR)
-    centroid_type = compute_spectral_centroid(y, sr)
-    onset_times = detect_onsets(y, sr, HOP_LENGTH)
-    iois = compute_iois(onset_times)
-    mean_ioi = np.mean(iois) if len(iois) > 0 else 0.0
-    coh = rhythm_coherence(iois)
-    lattice_base, lattice_coh = refined_rhythm_lattice(iois)
-    cqt = compute_cqt(y, sr, HOP_LENGTH)
-    invariance = cqt_shift_invariance(cqt)
     
-    print(f"Analysis for {file_path}:")
-    print(f"  Detected {centroid_type} sound.")
+    iois = np.diff(onsets)
+    mean_ioi = np.mean(iois)
+    std_ioi = np.std(iois)
+    rhythm_coherence = 1 / (1 + std_ioi / (mean_ioi + 1e-6))  # Normalized coherence
+    
+    # Improved rhythm lattice: Use autocorrelation for base period estimation
+    onset_times = onsets
+    max_lag = min(100, len(onset_times) - 1)  # Limit lags for efficiency
+    autocorr = np.correlate(iois, iois, mode='full')[len(iois)-1:]
+    autocorr = autocorr[:max_lag]
+    peaks = scipy.signal.find_peaks(autocorr)[0]
+    
+    if len(peaks) > 0:
+        base_lag = peaks[0] + 1  # First peak lag
+        lattice_base = mean_ioi * base_lag
+    else:
+        lattice_base = mean_ioi * 2  # Fallback to double mean
+    
+    # Adjust based on centroid for broad handling
+    if centroid_class == "low-centroid":
+        lattice_base *= 1.5  # Emphasize longer periods for bass-heavy
+    elif centroid_class == "high-centroid":
+        lattice_base *= 0.8  # Shorter for high freq
+    
+    # Lattice coherence: Fit onsets to lattice grid
+    grid = np.arange(0, onset_times[-1] + lattice_base, lattice_base)
+    hits = 0
+    for ot in onset_times:
+        if np.min(np.abs(grid - ot)) < lattice_base * 0.1:  # Tolerance 10%
+            hits += 1
+    lattice_coherence = hits / len(onset_times) if len(onset_times) > 0 else 0.0
+    
+    return mean_ioi, rhythm_coherence, lattice_base, lattice_coherence
+
+def compute_cqt_invariance(y, sr, n_bins=384):
+    # Compute HCQT for improved octave invariance
+    hop_length = 256  # Smaller hop for better resolution
+    fmin = librosa.note_to_hz('C1')
+    hcqt = librosa.core.hybrid_cqt(y, sr=sr, hop_length=hop_length, fmin=fmin, n_bins=n_bins, bins_per_octave=48, tuning=0.0)
+    
+    # For shift invariance metric: Compute self-similarity after synthetic octave shift
+    # Synthetic shift: Resample y to simulate octave up (double speed)
+    y_shifted = scipy.signal.resample(y, int(len(y) * 2))
+    hcqt_shifted = librosa.core.hybrid_cqt(y_shifted, sr=sr*2, hop_length=hop_length, fmin=fmin*2, n_bins=n_bins, bins_per_octave=48, tuning=0.0)
+    
+    # Normalize magnitudes
+    hcqt_mag = np.abs(hcqt)
+    hcqt_shifted_mag = np.abs(hcqt_shifted)
+    hcqt_mag /= np.max(hcqt_mag) + 1e-6
+    hcqt_shifted_mag /= np.max(hcqt_shifted_mag) + 1e-6
+    
+    # Roll shifted to align octaves (shift by 48 bins for one octave with 48 bpo)
+    hcqt_shifted_rolled = np.roll(hcqt_shifted_mag, -48, axis=0)
+    
+    # Compute correlation as invariance metric
+    min_len = min(hcqt_mag.shape[1], hcqt_shifted_rolled.shape[1])
+    corr = scipy.stats.pearsonr(hcqt_mag[:, :min_len].flatten(), hcqt_shifted_rolled[:, :min_len].flatten())[0]
+    invariance = max(0, corr)  # Clamp to [0,1]
+    
+    return hcqt, invariance
+
+def analyze_audio(filename):
+    y, sr = librosa.load(filename, sr=22050)
+    
+    # Spectral centroid
+    centroid = librosa.feature.spectral_centroid(y=y, sr=sr)
+    mean_centroid = np.mean(centroid)
+    centroid_class = classify_centroid(mean_centroid)
+    
+    # Onsets
+    onset_frames = librosa.onset.onset_detect(y=y, sr=sr, hop_length=256, backtrack=True)  # Improved with backtrack
+    onset_times = librosa.frames_to_time(onset_frames, sr=sr)
+    
+    # Rhythm lattice
+    mean_ioi, rhythm_coherence, lattice_base, lattice_coherence = compute_rhythm_lattice(onset_times, sr, centroid_class)
+    
+    # CQT with improved invariance
+    cqt, invariance = compute_cqt_invariance(y, sr)
+    
+    print(f"Analysis for {filename}:")
+    print(f"  Detected {centroid_class} sound.")
     print(f"  Detected onsets: {len(onset_times)}")
-    print(f"  mean IOI: {mean_ioi:.2f} s, rhythm coherence: {coh:.2f}")
+    print(f"  mean IOI: {mean_ioi:.2f} s, rhythm coherence: {rhythm_coherence:.2f}")
     print(f"  Rhythm lattice base: {lattice_base:.3f} s")
-    print(f"  lattice coherence: {lattice_coh:.2f}")
+    print(f"  lattice coherence: {lattice_coherence:.2f}")
     print(f"  CQT shape: {cqt.shape}, n_bins: {cqt.shape[0]}")
     print(f"  CQT shift invariance metric: {invariance:.2f} (higher is more invariant)")
 
 if __name__ == "__main__":
-    for wav in WAV_FILES:
+    for wav in wav_files:
         analyze_audio(wav)
+        print()  # Blank line between analyses
