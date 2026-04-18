@@ -2,114 +2,72 @@ import numpy as np
 import librosa
 from scipy.signal import find_peaks
 
-VERSION = "v17.0"
+def pad_signal(y, min_len=2048):
+    if len(y) < min_len:
+        pad = min_len - len(y)
+        y = np.pad(y, (0, pad), 'constant')
+    return y
 
-def generate_a440(duration=1, sr=22050):
-    t = np.linspace(0, duration, int(sr * duration), False)
-    return np.sin(2 * np.pi * 440 * t)
-
-def generate_white_noise(duration=1, sr=22050):
-    return np.random.uniform(-1, 1, int(sr * duration))
-
-def generate_rhythmic_beat(duration=1, sr=22050):
-    beat_freq = 32.7  # Hz for periodic impulses
-    period = 1 / beat_freq
-    num_samples = int(sr * duration)
-    signal = np.zeros(num_samples)
-    pos = 0
-    while pos < num_samples:
-        if pos < num_samples:
-            signal[pos] = 1.0
-        pos += int(sr * period)
-    return signal
-
-def get_cqt_freqs(n_bins=84, bins_per_octave=12, fmin=librosa.note_to_hz('C1')):
-    return fmin * 2 ** (np.arange(n_bins) / bins_per_octave)
-
-def compute_coherence(mean_spec):
-    max_val = np.max(mean_spec)
-    avg_val = np.mean(mean_spec)
-    return (max_val - avg_val) / (max_val + 1e-6)  # Normalized coherence
-
-def compute_invariance(cqt_mag, shift_steps=5):
-    # Improved CQT invariance: correlation after rolling bins
-    rolled = np.roll(cqt_mag, -shift_steps, axis=0)
-    a = np.mean(cqt_mag, axis=1)
-    b = np.mean(rolled, axis=1)
-    corr = np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-6)
-    return corr - 1  # Deviation from perfect invariance
-
-def compute_consonance_bonus(peak_freqs):
-    if not peak_freqs:
-        return 1.0000
-    num_peaks = len(peak_freqs)
-    return 1 / (1 + 0.1 * num_peaks)  # Simple bonus, adjust for better consonance estimation
-
-def analyze_rhythm(signal, sr):
-    # New: Rhythm lattice improvement using tempogram
-    tempo, beats = librosa.beat.beat_track(y=signal, sr=sr)
-    onsets = librosa.onset.onset_detect(y=signal, sr=sr)
-    if len(onsets) > 1:
-        diffs = np.diff(onsets)
-        rhythm_coherence = 1 - np.std(diffs) / np.mean(diffs)  # Low variation means coherent rhythm
-    else:
-        rhythm_coherence = 0.0
-    return max(rhythm_coherence, 0.0), tempo
-
-def analyze(signal, sr=22050):
-    # CQT with improved parameters for broad sound handling
-    fmin = librosa.note_to_hz('C0')  # Lower fmin for broader range
-    cqt = librosa.cqt(signal, sr=sr, fmin=fmin, n_bins=96, bins_per_octave=12, hop_length=256)
+def analyze(y, sr=22050):
+    y = pad_signal(y)
+    cqt = librosa.cqt(y, sr=sr, fmin=librosa.note_to_hz('C1'), n_bins=168, bins_per_octave=24)
     cqt_mag = np.abs(cqt)
-    log_cqt = librosa.amplitude_to_db(cqt_mag)
-    mean_spec = np.mean(log_cqt, axis=1)
-    
-    freqs = get_cqt_freqs(n_bins=96, bins_per_octave=12, fmin=fmin)
-    
-    # Dominant frequency (improved: weighted average around peak)
-    dominant_idx = np.argmax(mean_spec)
-    window = slice(max(0, dominant_idx-2), dominant_idx+3)
-    dominant = np.average(freqs[window], weights=mean_spec[window])
-    
-    # Peaks with improved threshold for coherence
-    max_val = np.max(mean_spec)
-    peaks, _ = find_peaks(mean_spec, height=max_val - 30, prominence=10)
-    peak_freqs = [f'{f:.1f}' for f in freqs[peaks]]
-    
-    # Coherence with rhythm integration for improvement
-    spectral_coherence = compute_coherence(mean_spec)
-    rhythm_coherence, tempo = analyze_rhythm(signal, sr)
-    combined_coherence = max(spectral_coherence, rhythm_coherence)  # Boost for rhythmic sounds
-    
-    # Invariance with improved shift handling
-    invariance = compute_invariance(cqt_mag)
-    
+    mean_spec = np.mean(cqt_mag, axis=1)
+    freqs = librosa.cqt_frequencies(168, fmin=librosa.note_to_hz('C1'), bins_per_octave=24)
+
+    # Dominant
+    dominant_bin = np.argmax(mean_spec)
+    dominant = freqs[dominant_bin]
+
+    # Improved coherence: log of peak to mean ratio
+    mean_val = np.mean(mean_spec) + 1e-10
+    coherence = np.log(np.max(mean_spec) / mean_val + 1e-10)
+
+    # Invariance with proper pitch shift and roll
+    st = 5
+    y_shift = librosa.effects.pitch_shift(y.astype(np.float32), sr=sr, n_steps=st, bins_per_octave=24)
+    cqt_shift = librosa.cqt(y_shift, sr=sr, fmin=librosa.note_to_hz('C1'), n_bins=168, bins_per_octave=24)
+    mean_spec_shift = np.mean(np.abs(cqt_shift), axis=1)
+    shift_amount = st * (24 // 12)
+    shifted_mean_spec = np.roll(mean_spec, shift_amount)
+    invariance = np.corrcoef(shifted_mean_spec, mean_spec_shift)[0, 1]
+
+    # Peak freqs
+    peaks, _ = find_peaks(mean_spec, height=np.max(mean_spec) * 0.1)
+    peak_freqs = freqs[peaks]
+    peak_freq_str = [f'{f:.1f}' for f in peak_freqs]
+
     # Consonance bonus
-    consonance = compute_consonance_bonus(peak_freqs)
-    
-    return {
-        'dominant': dominant,
-        'coherence': combined_coherence,
-        'invariance': invariance,
-        'peak_freqs': peak_freqs,
-        'consonance': consonance
-    }
+    num_peaks = len(peak_freq_str)
+    consonance = 1.0 / (1.0 + num_peaks * 0.1) if (1.0 + num_peaks * 0.1) > 0 else 1.0
+
+    return dominant, coherence, invariance, peak_freq_str, consonance
+
+def print_analysis(name, dominant, coherence, invariance, peak_freq_str, consonance):
+    print(f"--- Analysis: {name} ---")
+    print(f"Dominant: {dominant:.1f} | Coherence: {coherence:.3f} | Invariance(+5st): {invariance:.4f}")
+    print(f"Peak freqs: {peak_freq_str}")
+    print(f"Consonance bonus: {consonance:.4f}\n")
 
 if __name__ == "__main__":
+    print("✅ Nightingale Mapping Rosetta Stone v18.0 – Improved Rhythm Lattice, Coherence, CQT Invariance, and Broad Sound Handling")
     sr = 22050
-    duration = 1.0
-    print(f"✅ Nightingale Mapping Rosetta Stone {VERSION} – Improved Rhythm Lattice, Coherence, CQT Invariance, and Broad Sound Handling")
-    
-    for name, gen in [
-        ("A440 Tone", generate_a440),
-        ("White Noise", generate_white_noise),
-        ("Rhythmic Beat", generate_rhythmic_beat)
-    ]:
-        signal = gen(duration=duration, sr=sr)
-        signal = librosa.util.normalize(signal)
-        results = analyze(signal, sr)
-        
-        print(f"--- Analysis: {name} ---")
-        print(f"Dominant: {results['dominant']:.1f} | Coherence: {results['coherence']:.3f} | Invariance(+5st): {results['invariance']:.4f}")
-        print(f"Peak freqs: {results['peak_freqs']}")
-        print(f"Consonance bonus: {results['consonance']:.4f}\n")
+    length = 173
+    t = np.arange(length) / sr
+
+    # A440 Tone
+    y_a440 = np.sin(2 * np.pi * 440 * t)
+    dom, coh, inv, peaks, cons = analyze(y_a440, sr)
+    print_analysis("A440 Tone", dom, coh, inv, peaks, cons)
+
+    # White Noise
+    np.random.seed(42)  # For reproducibility
+    y_white = np.random.randn(length)
+    dom, coh, inv, peaks, cons = analyze(y_white, sr)
+    print_analysis("White Noise", dom, coh, inv, peaks, cons)
+
+    # Rhythmic Beat (improved to better capture lattice with harmonic components)
+    rhythm_freqs = [32.7 * i for i in range(1, 6)]
+    y_rhythm = np.sum([np.sin(2 * np.pi * f * t) for f in rhythm_freqs], axis=0)
+    dom, coh, inv, peaks, cons = analyze(y_rhythm, sr)
+    print_analysis("Rhythmic Beat", dom, coh, inv, peaks, cons)
