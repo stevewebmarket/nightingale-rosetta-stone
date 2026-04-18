@@ -3,7 +3,7 @@
 # Originator: Stephen OConnor (@nightingalemap) – The Nightingale Mapping
 # Date: April 17, 2026
 # Live Hub: https://github.com/stevewebmarket/nightingale-rosetta-stone
-# v16.4 – Enhanced Lattice Coherence and CQT Invariance
+# v16.4 – Enhanced Rhythm Lattice, Coherence, CQT Invariance, Broad Sound Handling
 # =============================================================================
 
 import librosa
@@ -12,99 +12,113 @@ import os
 from math import gcd
 from functools import reduce
 
-print("Analyzing available WAV files.")
-
-files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
-
-for file in files:
+def analyze_audio(file):
     print(f"Analysis for {file}:")
     y, sr = librosa.load(file, sr=22050)
-
-    # Spectral centroid for sound type detection
+    
+    # Detect sound type based on spectral centroid
     centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
-    mean_cent = np.mean(centroid)
-
-    if mean_cent < 2000:
+    mean_centroid = np.mean(centroid)
+    
+    if mean_centroid < 1500:
         sound_type = "low-centroid sound."
         sensitivity = "low"
-    elif mean_cent < 5000:
-        sound_type = "mid-centroid sound."
-        sensitivity = "mid"
-    else:
+        onset_delta = 0.1
+        onset_backtrack = True
+    elif mean_centroid > 4000:
         sound_type = "high-centroid sound."
         sensitivity = "high"
-
-    print(f"  Detected {sound_type}")
+        onset_delta = 0.02
+        onset_backtrack = False
+    else:
+        sound_type = "mid-centroid sound."
+        sensitivity = "mid"
+        onset_delta = 0.05
+        onset_backtrack = True
     
-    # Adjust onset detection parameters based on sensitivity
-    if sensitivity == "low":
-        delta = 0.1
-        wait = 1
-        pre_max = 0.03
-        post_max = 0.03
-    elif sensitivity == "mid":
-        delta = 0.05
-        wait = 2
-        pre_max = 0.05
-        post_max = 0.05
-    else:
-        delta = 0.02
-        wait = 3
-        pre_max = 0.07
-        post_max = 0.07
-
+    print(f"  Detected {sound_type}")
     print(f"  Using {sensitivity}-sensitivity onset params.")
-
-    onsets = librosa.onset.onset_detect(y=y, sr=sr, units='time', delta=delta, wait=wait,
-                                        pre_max=pre_max, post_max=post_max, backtrack=True)
-    print(f"  Detected onsets: {len(onsets)}")
-
-    if len(onsets) > 1:
-        iois = np.diff(onsets)
-        mean_ioi = np.mean(iois)
-        print(f"  mean IOI: {mean_ioi:.2f} s", end="")
-
-        # Rhythm coherence: inverse of coefficient of variation (improved for broader handling)
-        cv = np.std(iois) / mean_ioi if mean_ioi > 0 else 0
-        rhythm_coherence = 1 / (1 + cv) * (1 - np.exp(-len(onsets)/100))  # Adjust for onset density
-        print(f", rhythm coherence: {rhythm_coherence:.2f}")
-
-        # Improved rhythm lattice: gcd of quantized IOIs with fallback and min base
-        iois_ms = np.round(iois * 1000).astype(int)
-        iois_ms = iois_ms[iois_ms > 0]  # Avoid zero
-        if len(iois_ms) > 1:
-            base_ms = reduce(gcd, iois_ms)
-            base = max(base_ms / 1000.0, 0.001)  # Min base 1ms
-        else:
-            base = mean_ioi / 4 if mean_ioi > 0 else 0.001  # Fallback subdivision
-
-        print(f"  Rhythm lattice base: {base:.3f} s")
-
-        # Improved lattice coherence: fit quality with tolerance
-        lattice_points = np.arange(0, onsets[-1] + base, base)
-        dists = []
-        for o in onsets:
-            min_dist = min(abs(o - lp) for lp in lattice_points)
-            dists.append(min_dist)
-        mean_dist = np.mean(dists)
-        tol = base * 0.1  # 10% tolerance for better coherence on varied sounds
-        lattice_coherence = np.mean(np.array(dists) < tol)  # Fraction within tolerance
-        print(f"  lattice coherence: {lattice_coherence:.2f}")
-
-    else:
+    
+    # Onset detection with adjusted parameters
+    onset_times = librosa.onset.onset_detect(y=y, sr=sr, units='time', delta=onset_delta, backtrack=onset_backtrack)
+    num_onsets = len(onset_times)
+    print(f"  Detected onsets: {num_onsets}")
+    
+    if num_onsets < 2:
         print("  Insufficient onsets for rhythm analysis.")
-        continue
+        return
+    
+    iois = np.diff(onset_times)
+    mean_ioi = np.mean(iois)
+    
+    # Rhythm coherence: inverse of coefficient of variation
+    cv = np.std(iois) / mean_ioi if mean_ioi > 0 else 0
+    rhythm_coherence = 1 / (1 + cv)
+    print(f"  mean IOI: {mean_ioi:.2f} s, rhythm coherence: {rhythm_coherence:.2f}")
+    
+    # Improved rhythm lattice: adaptive base using GCD of rounded IOIs in ms
+    iois_ms = np.round(iois * 1000).astype(int)
+    if len(iois_ms) > 0 and np.all(iois_ms > 0):
+        gcd_val = reduce(gcd, iois_ms)
+        base = max(gcd_val / 1000.0, 0.001)  # Ensure minimum base
+    else:
+        base = 0.001
+    print(f"  Rhythm lattice base: {base:.3f} s")
+    
+    # Lattice coherence: fraction of onsets fitting the lattice within tolerance
+    if num_onsets > 0:
+        rel_times = onset_times - onset_times[0]
+        tol = base * 0.5
+        fits = []
+        for rt in rel_times[1:]:
+            k = round(rt / base)
+            dist = abs(rt - k * base)
+            fits.append(dist < tol)
+        lattice_coherence = np.mean(fits)
+    else:
+        lattice_coherence = 0
+    print(f"  lattice coherence: {lattice_coherence:.2f}")
+    
+    # Improved CQT: higher resolution for better shift invariance
+    bins_per_octave = 48
+    n_bins = 336  # 7 octaves * 48
+    cqt = librosa.cqt(y, sr=sr, hop_length=512, fmin=librosa.note_to_hz('C1'), n_bins=n_bins, bins_per_octave=bins_per_octave)
+    print(f"  CQT shape: {cqt.shape}, n_bins: {cqt.shape[0]}")
+    
+    # CQT pitch shift invariance metric (lower is better)
+    y_shift = librosa.effects.pitch_shift(y, sr=sr, n_steps=1)
+    cqt_shift = librosa.cqt(y_shift, sr=sr, hop_length=512, fmin=librosa.note_to_hz('C1'), n_bins=n_bins, bins_per_octave=bins_per_octave)
+    
+    log_cqt = librosa.amplitude_to_db(np.abs(cqt))
+    log_shift = librosa.amplitude_to_db(np.abs(cqt_shift))
+    
+    bps = bins_per_octave / 12  # bins per semitone
+    shift_bins = int(bps)
+    # Roll shifted CQT down to align
+    rolled_shift = np.roll(log_shift, -shift_bins, axis=0)
+    
+    # Compute RMSE ignoring edge bins
+    min_time = min(log_cqt.shape[1], rolled_shift.shape[1])
+    diff = log_cqt[shift_bins:, :min_time] - rolled_shift[:-shift_bins, :min_time]
+    metric = np.sqrt(np.mean(diff ** 2))
+    print(f"  CQT shift invariance metric: {metric:.2f} (lower is more invariant)")
 
-    # Improved CQT: higher bins_per_octave for better shift invariance, normalized
-    cqt = librosa.cqt(y, sr=sr, hop_length=256, n_bins=252, bins_per_octave=36, filter_scale=1.5)
-    cqt_mag = librosa.amplitude_to_db(np.abs(cqt))
-    print(f"  CQT shape: {cqt_mag.shape}, n_bins: {cqt_mag.shape[0]}")
+def main():
+    print("Analyzing available WAV files.")
+    available_files = [f for f in os.listdir('.') if f.endswith('.wav')]
+    if not available_files:
+        # Fallback to synthetic test signals
+        print("No WAV files found. Generating synthetic test signals.")
+        sr = 22050
+        t = np.linspace(0, 5, 5 * sr)
+        y_sine = np.sin(2 * np.pi * 440 * t)  # Simple sine wave
+        librosa.output.write_wav('synthetic_sine.wav', y_sine, sr)
+        analyze_audio('synthetic_sine.wav')
+        os.remove('synthetic_sine.wav')
+    else:
+        for file in ['birdsong.wav', 'orchestra.wav', 'rock.wav']:
+            if file in available_files:
+                analyze_audio(file)
 
-    # Improved invariance metric: average normalized diff over small shifts (1-3 bins)
-    diffs = []
-    for shift in [1, 2, 3]:
-        shifted = np.roll(cqt_mag, shift, axis=0)
-        diff = np.mean(np.abs(cqt_mag - shifted)) / (np.mean(np.abs(cqt_mag)) + 1e-6)
-        diffs.append(diff)
-    invariance_metric = np.mean(diffs)
-    print(f"  CQT shift invariance metric: {invariance_metric:.2f} (lower is more invariant)")
+if __name__ == "__main__":
+    main()
