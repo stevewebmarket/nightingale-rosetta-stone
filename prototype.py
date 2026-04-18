@@ -3,97 +3,104 @@
 # Originator: Stephen OConnor (@nightingalemap) – The Nightingale Mapping
 # Date: April 17, 2026
 # Live Hub: https://github.com/stevewebmarket/nightingale-rosetta-stone
-# v16.4 – Enhanced Rhythm Lattice Coherence + CQT Invariance
+# v16.4 – Enhanced Rhythm Lattice, Coherence, and CQT Invariance
 # =============================================================================
 
 import librosa
 import numpy as np
 import os
 
-def analyze_file(filename):
-    y, sr = librosa.load(filename, sr=22050)
+# List of available WAV files
+available_files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
+
+# Function to compute lattice coherence for a given base
+def compute_lattice_coherence(onset_times, base):
+    if len(onset_times) < 2:
+        return 0.0
+    start = onset_times[0]
+    end = onset_times[-1]
+    grid = np.arange(start, end + base, base)
+    dists = [np.min(np.abs(t - grid)) for t in onset_times]
+    tolerance = base * 0.1  # 10% tolerance
+    coh = np.sum(np.array(dists) < tolerance) / len(onset_times)
+    return coh
+
+# Function to find optimal lattice base by maximizing coherence
+def find_optimal_lattice_base(onset_times, iois):
+    if len(onset_times) < 2:
+        return np.mean(iois) if len(iois) > 0 else 0.0, 0.0
+    # Possible bases: range from 0.05 to 1.0 s with finer steps for better precision
+    possible_bases = np.arange(0.05, 1.01, 0.005)
+    max_coh = 0.0
+    best_base = np.median(iois)
+    for b in possible_bases:
+        coh = compute_lattice_coherence(onset_times, b)
+        if coh > max_coh:
+            max_coh = coh
+            best_base = b
+    return best_base, max_coh
+
+# Function to analyze a single audio file
+def analyze_audio(file_path):
+    y, sr = librosa.load(file_path, sr=22050)
     
-    # Compute spectral centroid for sound type classification
+    # Compute spectral centroid to classify sound type
     centroid = librosa.feature.spectral_centroid(y=y, sr=sr)
     mean_centroid = np.mean(centroid)
     
     if mean_centroid > 4000:
-        sound_type = "high-centroid sound (e.g., birdsong)"
-        sensitivity = "high-sensitivity"
-        delta = 0.04  # Increased sensitivity for high-frequency content
-        backtrack = False
-    elif mean_centroid < 1000:
-        sound_type = "low-centroid sound (e.g., bass-heavy)"
-        sensitivity = "low-sensitivity"
-        delta = 0.10
-        backtrack = True
+        print("  Detected high-centroid sound (e.g., birdsong).")
+        print("  Using high-sensitivity onset params.")
+        onset_params = {'backtrack': True, 'pre_max': 0.02, 'post_max': 0.02, 'wait': 0.01}
+    elif mean_centroid < 1500:
+        print("  Detected low-centroid sound (e.g., bass-heavy).")
+        print("  Using low-sensitivity onset params.")
+        onset_params = {'backtrack': False, 'pre_max': 0.05, 'post_max': 0.05, 'wait': 0.03}
     else:
-        sound_type = "mid-centroid sound (e.g., orchestral or rock)"
-        sensitivity = "standard-sensitivity"
-        delta = 0.07
-        backtrack = True
+        print("  Detected mid-centroid sound (e.g., orchestral or rock).")
+        print("  Using standard-sensitivity onset params.")
+        onset_params = {'backtrack': False, 'pre_max': 0.03, 'post_max': 0.03, 'wait': 0.02}
     
-    print(f"  Detected {sound_type}.")
-    print(f"  Using {sensitivity} onset params.")
-    
-    # Onset detection with adjusted parameters
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-    onsets = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, backtrack=backtrack, delta=delta)
+    # Onset detection with adaptive parameters
+    onsets = librosa.onset.onset_detect(y=y, sr=sr, units='time', **onset_params)
     print(f"  Detected onsets: {len(onsets)}")
     
-    # Compute IOIs and rhythm coherence
-    times = librosa.frames_to_time(onsets, sr=sr)
-    iois = np.diff(times)
-    mean_ioi = np.mean(iois) if len(iois) > 0 else 0
-    rhythm_coherence = 1 - (np.std(iois) / mean_ioi) if mean_ioi > 0 and len(iois) > 1 else 0
+    if len(onsets) < 2:
+        print("  Insufficient onsets for rhythm analysis.")
+        return
+    
+    iois = np.diff(onsets)
+    mean_ioi = np.mean(iois)
+    
+    # Rhythm coherence: 1 - coefficient of variation (improved with clipping)
+    cv = np.std(iois) / mean_ioi if mean_ioi > 0 else 0
+    rhythm_coherence = max(0, 1 - cv)
     print(f"  mean IOI: {mean_ioi:.2f} s, rhythm coherence: {rhythm_coherence:.2f}")
     
-    # Improved rhythm lattice: Use tempogram to find dominant periods, select best for coherence
-    tempogram = librosa.feature.tempogram(onset_envelope=onset_env, sr=sr)
-    autocorr = np.mean(tempogram, axis=0)  # Average over time for periodicity
-    peaks = librosa.util.peak_pick(autocorr, pre_max=3, post_max=3, pre_avg=5, post_avg=5, delta=0.1, wait=10)
-    candidate_bases = [60 / (i + 1) for i in peaks if i > 0]  # Convert lags to periods (approx)
-    if not candidate_bases:
-        candidate_bases = [mean_ioi]
+    # Improved rhythm lattice: optimize base for max coherence
+    lattice_base, lattice_coh = find_optimal_lattice_base(onsets, iois)
+    print(f"  Rhythm lattice base: {lattice_base:.3f} s, lattice coherence: {lattice_coh:.2f}")
     
-    best_coherence = 0
-    best_base = candidate_bases[0]
-    for base in candidate_bases + [mean_ioi]:  # Include mean IOI as fallback
-        if base <= 0:
-            continue
-        quantized = np.round(times / base) * base
-        errors = np.abs(times - quantized) / base
-        coherence = 1 - np.mean(errors) if len(errors) > 0 else 0
-        if coherence > best_coherence:
-            best_coherence = coherence
-            best_base = base
+    # Improved CQT: higher resolution for better invariance, adaptive fmin
+    fmin = librosa.note_to_hz('C1') if mean_centroid < 1500 else librosa.note_to_hz('C2') if mean_centroid > 4000 else librosa.note_to_hz('A1')
+    bins_per_octave = 36  # Increased for finer resolution and better shift invariance
+    n_bins = 216  # 36 bpo * 6 octaves
+    cqt = librosa.cqt(y, sr=sr, fmin=fmin, n_bins=n_bins, bins_per_octave=bins_per_octave)
+    print(f"  CQT shape: {cqt.shape}, n_bins: {n_bins}")
     
-    print(f"  Rhythm lattice base: {best_base:.3f} s, lattice coherence: {best_coherence:.2f}")
-    
-    # CQT with improved invariance: Use higher bins_per_octave for better shift invariance
-    cqt = librosa.cqt(y, sr=sr, n_bins=144, bins_per_octave=36, fmin=librosa.note_to_hz('C1'))
-    print(f"  CQT shape: {cqt.shape}, n_bins: {cqt.shape[0]}")
-    
-    # Improved shift invariance metric: Normalized difference after log-mag and shift
-    log_cqt = librosa.amplitude_to_db(np.abs(cqt))
-    shifted = np.roll(log_cqt, 1, axis=0)
-    diff = np.mean(np.abs(log_cqt - shifted))
-    max_val = np.max(log_cqt) - np.min(log_cqt) if np.ptp(log_cqt) > 0 else 1
-    invariance = diff / max_val
-    print(f"  CQT shift invariance metric: {invariance:.2f} (lower is more invariant)")
+    # CQT shift invariance metric: normalized mean diff after 1-bin shift
+    abs_cqt = np.abs(cqt)
+    shifted = np.roll(abs_cqt, 1, axis=0)
+    diff = np.mean(np.abs(abs_cqt - shifted))
+    norm = np.mean(abs_cqt) + 1e-8  # Avoid division by zero
+    metric = diff / norm
+    print(f"  CQT shift invariance metric: {metric:.2f} (lower is more invariant)")
 
 # Main execution
-wav_files = [f for f in os.listdir('.') if f.lower().endswith('.wav')]
-if not wav_files:
-    print("No WAV files found. Falling back to synthetic test signals.")
-    # Synthetic signal example (sine wave with rhythm)
-    sr = 22050
-    t = np.linspace(0, 5, 5 * sr)
-    y = np.sin(2 * np.pi * 440 * t) * (t % 0.5 < 0.1)  # Pulsed tone
-    # Save or directly analyze synthetic
-    analyze_file('synthetic.wav')  # Placeholder, but in code we'd process y directly
-else:
-    print("Analyzing available WAV files.")
-    for file in sorted(wav_files):
+print("Analyzing available WAV files.")
+for file in available_files:
+    if os.path.exists(file):
         print(f"Analysis for {file}:")
-        analyze_file(file)
+        analyze_audio(file)
+    else:
+        print(f"File {file} not found.")
