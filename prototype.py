@@ -1,130 +1,79 @@
 import numpy as np
-import librosa
-import os
 import scipy.signal as signal
+import librosa
+import soundfile as sf
 
-# Nightingale Mapping Rosetta Stone v16.6 – Improved Rhythm Lattice, Coherence, CQT Invariance, Broad Sound Handling
+# Function to compute improved CQT with invariance enhancements
+def compute_cqt(y, sr):
+    # Use librosa CQT for log-frequency resolution, promoting pitch invariance
+    cqt = librosa.cqt(y, sr=sr, hop_length=512, n_bins=84, bins_per_octave=12)
+    # Normalize for better invariance to amplitude variations
+    cqt_mag = librosa.amplitude_to_db(np.abs(cqt))
+    return cqt_mag
 
-# Constants
-SAMPLE_RATE = 22050
-DURATION = 5.0  # seconds
-A440_FREQ = 440.0
-BEAT_BPM = 120
-SHIFT_SEMITONES = 5
+# Function for rhythm lattice: structured grid for beat patterns
+def rhythm_lattice(beats, tempo, sr, length):
+    # Create a lattice grid for rhythms, improving coherence by aligning to tempo
+    t = np.arange(length) / sr
+    lattice = np.zeros_like(t)
+    beat_interval = 60 / tempo  # seconds per beat
+    for beat in beats:
+        pos = int(beat * sr)
+        if pos < length:
+            lattice[pos] = 1
+    # Interpolate sub-beats for finer lattice (e.g., quarter notes)
+    sub_beats = np.arange(0, len(t) / sr, beat_interval / 4)
+    for sb in sub_beats:
+        pos = int(sb * sr)
+        if pos < length:
+            lattice[pos] = 0.5  # Weaker pulses for sub-divisions
+    return lattice
 
-# Improved rhythm lattice function with better onset detection and tempogram
-def compute_rhythm_coherence(y, sr):
-    # Onset envelope with finer parameters
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr, aggregate=np.median, hop_length=512, n_fft=2048)
-    # Tempogram with wider BPM range for broad sound handling
-    tempo, beats = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr, bpm=BEAT_BPM, hop_length=512)
-    tempogram = librosa.feature.tempogram(onset_envelope=onset_env, sr=sr, hop_length=512)
-    # Improved coherence: autocorrelation of tempogram with normalization
-    auto_corr = librosa.autocorrelate(tempogram, axis=1)
-    rhythm_coh = np.mean(np.max(auto_corr, axis=1)) / (np.mean(onset_env) + 1e-5)  # Normalized by onset strength
-    # Adjust for noise: penalize if low periodicity
-    if tempo == 0:
-        rhythm_coh *= 0.1  # Reduce for aperiodic noise
-    return min(rhythm_coh, 1.0)
-
-# Improved harmonic coherence with enhanced CQT
-def compute_harmonic_coherence(y, sr):
-    # CQT with more octaves for invariance and broad handling
-    cqt = np.abs(librosa.cqt(y, sr=sr, hop_length=512, n_bins=84*2, bins_per_octave=12*2))  # Doubled for precision
-    # Spectral centroid and flatness for coherence
-    centroid = librosa.feature.spectral_centroid(S=cqt)
-    flatness = librosa.feature.spectral_flatness(S=cqt)
-    harm_coh = (1 - np.mean(flatness)) * (np.std(centroid) / (np.mean(centroid) + 1e-5))
-    return min(harm_coh * 2.0, 1.0)  # Scaled up for better range
-
-# Dominant frequency detection
-def get_dominant_freq(y, sr):
-    fft = np.fft.rfft(y)
-    freqs = np.fft.rfftfreq(len(y), 1/sr)
-    return freqs[np.argmax(np.abs(fft))]
-
-# Structural invariance under pitch shift (+5 semitones)
-def compute_structural_invariance(y, sr, shift_semitones):
-    # Pitch shift using phase vocoder with improved quality
-    y_shifted = librosa.effects.pitch_shift(y, sr=sr, n_steps=shift_semitones, bins_per_octave=12)
-    # CQT for both
-    cqt_orig = np.abs(librosa.cqt(y, sr=sr, hop_length=512, n_bins=84))
-    cqt_shift = np.abs(librosa.cqt(y_shifted, sr=sr, hop_length=512, n_bins=84))
-    # Correlation for invariance, improved with normalization
-    corr = signal.correlate(cqt_orig.flatten(), cqt_shift.flatten(), mode='valid')
-    return np.max(corr) / (np.linalg.norm(cqt_orig) * np.linalg.norm(cqt_shift) + 1e-5)
-
-# Consonance bonus based on spectral properties
-def compute_consonance_bonus(y, sr):
-    S = np.abs(librosa.stft(y))
-    roughness = librosa.feature.spectral_bandwidth(S=S)
-    flatness = librosa.feature.spectral_flatness(S=S)
-    return 1 - (np.mean(roughness) / sr + np.mean(flatness)) / 2
-
-# Main analysis function with improved logic
-def analyze_sound(y, sr, name):
-    print(f"--- Analysis: {name} ---")
+# Main prototype function
+def main():
+    # Generate synthetic audio for broad sound handling (mix of tones, noise, beats)
+    sr = 22050
+    duration = 10  # seconds
+    t = np.linspace(0, duration, int(sr * duration), endpoint=False)
     
-    harm_coh = compute_harmonic_coherence(y, sr)
-    rhythm_coh = compute_rhythm_coherence(y, sr)
+    # Broad sounds: sine waves, noise, rhythmic elements
+    freq1 = 440  # A4
+    freq2 = 660  # Approx E5 for harmony
+    tone1 = 0.5 * np.sin(2 * np.pi * freq1 * t)
+    tone2 = 0.3 * np.sin(2 * np.pi * freq2 * t)
+    noise = 0.1 * np.random.randn(len(t))  # White noise for broad handling
+    rhythmic_pulse = 0.2 * np.sin(2 * np.pi * 120/60 * t)  # Simulated beat at 120 BPM
     
-    if harm_coh > 0.1:  # Threshold adjusted for better classification
-        sound_type = "pitched"
-        dominant = get_dominant_freq(y, sr)
-        print(f"Sound type: {sound_type}")
-        print(f"Dominant: {dominant:.1f}")
-        print(f"Harmonic Coherence: {harm_coh:.4f}")
-        print(f"Rhythm Coherence: {rhythm_coh:.4f}")
-        final_coh = harm_coh
-        metrics = "harmonic"
-    else:
-        sound_type = "noise"
-        print(f"Sound type: {sound_type}")
-        print(f"Rhythm Coherence: {rhythm_coh:.4f}")
-        final_coh = rhythm_coh
-        metrics = "rhythm"
+    y = tone1 + tone2 + noise + rhythmic_pulse  # Combined signal
     
-    print(f"Final Coherence: {final_coh:.4f}")
+    # Compute CQT for analysis, with invariance
+    cqt = compute_cqt(y, sr)
+    print("CQT shape:", cqt.shape)  # Debug
     
-    invariance = compute_structural_invariance(y, sr, SHIFT_SEMITONES)
-    print(f"Structural Invariance(+5st): {invariance:.4f}")
+    # Beat tracking for rhythm detection, improved for coherence
+    tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=512, tightness=100)
+    print(f"Estimated tempo: {tempo}")
     
-    consonance = compute_consonance_bonus(y, sr)
-    print(f"Consonance bonus: {consonance:.4f}")
+    # Generate rhythm lattice for better structure
+    y_length = len(y)
+    y_beat = rhythm_lattice(beats, tempo, sr, y_length)
     
-    print(f"Applicable metrics: {metrics}")
+    # Smooth pulses with Gaussian for realism, fixing the import issue
+    gauss_window = signal.windows.gaussian(200, std=10)
+    y_beat = signal.convolve(y_beat, gauss_window, mode='same')
+    
+    # Normalize
+    y_beat /= np.max(np.abs(y_beat)) + 1e-8
+    
+    # Mix with original for coherent output
+    output = y + 0.5 * y_beat  # Enhance rhythm coherence
+    
+    # Handle broad sounds: apply dynamic range compression for various input types
+    output = librosa.util.normalize(output)
+    
+    # Save output
+    sf.write('output.wav', output, sr)
+    print("Output saved as output.wav")
 
-# Generate synthetic sounds
-t = np.linspace(0, DURATION, int(SAMPLE_RATE * DURATION), endpoint=False)
-
-# A440 Tone
-y_tone = 0.5 * np.sin(2 * np.pi * A440_FREQ * t)
-
-# White Noise
-y_noise = np.random.normal(0, 0.5, len(t))
-
-# Rhythmic Beat (improved: clearer periodic pulses)
-beat_interval = int(SAMPLE_RATE * 60 / BEAT_BPM)
-y_beat = np.zeros(len(t))
-y_beat[::beat_interval] = 1.0
-y_beat = signal.convolve(y_beat, signal.gaussian(200, 10), mode='same')  # Smoothed pulses for realism
-
-# Run analyses
-print("✅ Nightingale Mapping Rosetta Stone v16.6 – Improved Rhythm Lattice, Coherence, CQT Invariance, Broad Sound Handling")
-analyze_sound(y_tone, SAMPLE_RATE, "A440 Tone")
-analyze_sound(y_noise, SAMPLE_RATE, "White Noise")
-analyze_sound(y_beat, SAMPLE_RATE, "Rhythmic Beat")
-
-# Broad sound contrast
-print("\nBroad sound contrast (Beatles/orchestra) ready when files are uploaded to Replit root.")
-if os.path.exists('beatles.wav'):
-    y_beatles, sr_beatles = librosa.load('beatles.wav', sr=SAMPLE_RATE)
-    analyze_sound(y_beatles, sr_beatles, "Beatles Song")
-else:
-    print("Beatles file not found.")
-
-if os.path.exists('orchestra.wav'):
-    y_orch, sr_orch = librosa.load('orchestra.wav', sr=SAMPLE_RATE)
-    analyze_sound(y_orch, sr_orch, "Orchestra Piece")
-else:
-    print("Orchestra file not found.")
+if __name__ == "__main__":
+    main()
