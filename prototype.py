@@ -3,105 +3,131 @@
 # Originator: Stephen OConnor (@nightingalemap) – The Nightingale Mapping
 # Date: April 17, 2026
 # Live Hub: https://github.com/stevewebmarket/nightingale-rosetta-stone
-# v16.4 – Enhanced Lattice Dynamics and CQT Adaptivity
+# v16.4 – Adaptive Rhythm Lattice + Enhanced CQT Invariance
 # =============================================================================
 
 import librosa
 import numpy as np
-import math
-
-def analyze_audio(file_path):
-    y, sr = librosa.load(file_path, sr=22050)
-    
-    # Compute spectral centroid to classify sound type
-    centroid = librosa.feature.spectral_centroid(y=y, sr=sr)
-    mean_centroid = np.mean(centroid)
-    
-    if mean_centroid > 5000:
-        print("  Detected high-centroid sound.")
-        print("  Using high-sensitivity onset params.")
-        # High-sensitivity params for transient-rich sounds like birdsong
-        onset_hop = 128
-        onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=onset_hop, aggregate=np.median)
-        onsets = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, backtrack=True, pre_max=0.02, post_max=0.02)
-        cqt_hop = 128  # Smaller hop for better temporal resolution in high-frequency content
-        cqt_bpo = 48   # Standard bins per octave
-    else:
-        print("  Detected mid-centroid sound.")
-        print("  Using mid-sensitivity onset params.")
-        onset_hop = 512
-        onsets = librosa.onset.onset_detect(y=y, sr=sr, hop_length=onset_hop)
-        cqt_hop = 512
-        cqt_bpo = 48
-    
-    num_onsets = len(onsets)
-    print(f"  Detected onsets: {num_onsets}")
-    
-    # Compute IOIs
-    onset_times = librosa.frames_to_time(onsets, sr=sr, hop_length=onset_hop)
-    iois = np.diff(onset_times)
-    if len(iois) > 0:
-        mean_ioi = np.mean(iois)
-    else:
-        mean_ioi = 0
-    print(f"  mean IOI: {mean_ioi:.2f} s", end="")
-    
-    # Rhythm coherence: 1 - coefficient of variation (improved normalization)
-    if len(iois) > 1:
-        cv = np.std(iois) / mean_ioi
-        coherence = max(0, 1 - cv) if cv <= 1 else 0
-    else:
-        coherence = 0
-    print(f", rhythm coherence: {coherence:.2f}")
-    
-    # Improved rhythm lattice base: use GCD of quantized IOIs for better adaptability
-    if len(iois) > 0:
-        iois_ms = [int(round(i * 1000)) for i in iois if i > 0]
-        if iois_ms:
-            base_ms = math.gcd(*iois_ms)
-            lattice_base = max(0.001, base_ms / 1000.0)
-        else:
-            lattice_base = 0.001
-    else:
-        lattice_base = 0.001
-    print(f"  Rhythm lattice base: {lattice_base:.3f} s")
-    
-    # Improved lattice coherence: proportion of onsets aligning within adaptive tolerance
-    tolerance = lattice_base * 0.1  # Tighter tolerance for better coherence measurement
-    aligned = 0
-    ref_time = onset_times[0] if len(onset_times) > 0 else 0
-    for t in onset_times:
-        rel_t = t - ref_time
-        multiples = round(rel_t / lattice_base)
-        aligned_t = multiples * lattice_base + ref_time
-        if abs(t - aligned_t) <= tolerance:
-            aligned += 1
-    lattice_coherence = aligned / num_onsets if num_onsets > 0 else 0
-    print(f"  lattice coherence: {lattice_coherence:.2f}")
-    
-    # CQT with adaptive parameters for better invariance
-    n_bins = 384
-    cqt = librosa.cqt(y=y, sr=sr, hop_length=cqt_hop, n_bins=n_bins, bins_per_octave=cqt_bpo)
-    print(f"  CQT shape: {cqt.shape}, n_bins: {cqt.shape[0]}")
-    
-    # Improved CQT shift invariance metric: average correlation over multiple small shifts
-    if cqt.shape[1] > 5:  # Ensure enough frames
-        cqt_mag = np.abs(cqt)
-        invariance_scores = []
-        for shift in [1, 2]:  # Check invariance to small shifts
-            shifted = np.roll(cqt_mag, shift, axis=1)
-            corrs = [np.corrcoef(cqt_mag[i], shifted[i])[0, 1] for i in range(n_bins)]
-            invariance_scores.append(np.mean(corrs))
-        invariance = np.mean(invariance_scores)
-    else:
-        invariance = 0
-    print(f"  CQT shift invariance metric: {invariance:.2f} (higher is more invariant)")
+from scipy.stats import entropy
+from scipy.signal import correlate
 
 # List of available WAV files
-files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
+wav_files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
 
-# Analyze each file
-for file in files:
-    print(f"Analysis for {file}:")
-    analyze_audio(file)
-    print("")
+def classify_sound_type(y, sr):
+    """Classify sound based on spectral centroid."""
+    centroid = librosa.feature.spectral_centroid(y=y, sr=sr)
+    mean_centroid = np.mean(centroid)
+    if mean_centroid < 2000:
+        return "low-centroid"
+    elif mean_centroid > 4000:
+        return "high-centroid"
+    else:
+        return "mid-centroid"
+
+def detect_onsets(y, sr, sensitivity='mid'):
+    """Detect onsets with adjustable sensitivity."""
+    if sensitivity == 'low':
+        hop_length = 1024
+        backtrack = False
+    elif sensitivity == 'high':
+        hop_length = 256
+        backtrack = True
+    else:  # mid
+        hop_length = 512
+        backtrack = True
+    
+    o_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
+    onsets = librosa.onset.onset_detect(onset_envelope=o_env, sr=sr, hop_length=hop_length, backtrack=backtrack)
+    return onsets
+
+def compute_rhythm_metrics(onsets, sr):
+    """Compute mean IOI and rhythm coherence."""
+    times = librosa.frames_to_time(onsets, sr=sr)
+    iois = np.diff(times)
+    if len(iois) == 0:
+        return 0, 0
+    mean_ioi = np.mean(iois)
+    # Improved coherence: inverse of normalized std + entropy of binned IOIs
+    norm_std = np.std(iois) / mean_ioi
+    hist, _ = np.histogram(iois, bins=20)
+    ent = entropy(hist + 1e-10) / np.log(20)  # Normalized entropy
+    coherence = 1 / (1 + norm_std + ent)
+    return mean_ioi, coherence
+
+def compute_rhythm_lattice(mean_ioi, iois, sr):
+    """Compute adaptive rhythm lattice base and coherence."""
+    # Adaptive base: fraction of min IOI, floored to ms resolution
+    min_ioi = np.min(iois) if len(iois) > 0 else mean_ioi
+    base = max(0.001, min_ioi / 20)  # At least 1ms, up to min_ioi/20
+    base = np.round(base, 3)  # Round to ms
+    
+    # Lattice coherence: how well IOIs fit multiples of base
+    multiples = iois / base
+    errors = np.abs(multiples - np.round(multiples))
+    lattice_coherence = 1 - np.mean(errors) / 0.5  # Normalized, higher better
+    return base, lattice_coherence
+
+def compute_cqt(y, sr):
+    """Compute CQT with parameters for better invariance."""
+    # Increased bins per octave for better resolution and invariance
+    cqt = librosa.cqt(y, sr=sr, hop_length=512, n_bins=384, bins_per_octave=48, filter_scale=1.5)
+    cqt_mag = np.abs(cqt)
+    return cqt_mag
+
+def cqt_shift_invariance(cqt_mag):
+    """Compute improved shift invariance metric."""
+    # Normalize CQT
+    cqt_norm = cqt_mag / (np.max(cqt_mag) + 1e-10)
+    
+    # Compute autocorrelation in frequency dimension for each time frame
+    autocorrs = [correlate(frame, frame, mode='full') for frame in cqt_norm.T]
+    autocorrs = np.array(autocorrs)
+    
+    # Mean peak width as invariance proxy (narrower peaks = less invariant? Wait, invert)
+    # Actually, higher invariance if autocorrelation is flat/high off zero
+    mean_corr_off_zero = np.mean(np.abs(autocorrs[:, 1:])) / np.mean(np.abs(autocorrs[:, 0]))
+    
+    # Additional: entropy of frequency distribution per frame
+    entropies = [entropy(frame + 1e-10) for frame in cqt_norm.T]
+    mean_entropy = np.mean(entropies) / np.log(cqt_norm.shape[0])
+    
+    # Combined metric: higher correlation off-zero and higher entropy indicate broader invariance
+    metric = 0.5 * mean_corr_off_zero + 0.5 * mean_entropy
+    return metric
+
+def analyze_file(filename):
+    y, sr = librosa.load(filename, sr=22050)
+    sound_type = classify_sound_type(y, sr)
+    print(f"Analysis for {filename}:")
+    print(f"  Detected {sound_type} sound.")
+    
+    if sound_type == 'low-centroid':
+        sensitivity = 'low'
+    elif sound_type == 'high-centroid':
+        sensitivity = 'high'
+    else:
+        sensitivity = 'mid'
+    print(f"  Using {sensitivity}-sensitivity onset params.")
+    
+    onsets = detect_onsets(y, sr, sensitivity)
+    print(f"  Detected onsets: {len(onsets)}")
+    
+    mean_ioi, rhythm_coherence = compute_rhythm_metrics(onsets, sr)
+    print(f"  mean IOI: {mean_ioi:.2f} s, rhythm coherence: {rhythm_coherence:.2f}")
+    
+    iois = np.diff(librosa.frames_to_time(onsets, sr=sr))
+    lattice_base, lattice_coherence = compute_rhythm_lattice(mean_ioi, iois, sr)
+    print(f"  Rhythm lattice base: {lattice_base:.3f} s")
+    print(f"  lattice coherence: {lattice_coherence:.2f}")
+    
+    cqt_mag = compute_cqt(y, sr)
+    print(f"  CQT shape: {cqt_mag.shape}, n_bins: {cqt_mag.shape[0]}")
+    
+    invariance = cqt_shift_invariance(cqt_mag)
+    print(f"  CQT shift invariance metric: {invariance:.2f} (higher is more invariant)")
+    print()
+
+if __name__ == "__main__":
+    for file in wav_files:
+        analyze_file(file)
