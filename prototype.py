@@ -1,79 +1,84 @@
+# =============================================================================
+# Nightingale Mapping – Rosetta Stone Prototype.py (permanent name)
+# Originator: Stephen OConnor (@nightingalemap) – The Nightingale Mapping
+# Date: April 17, 2026
+# Live Hub: https://github.com/stevewebmarket/nightingale-rosetta-stone
+# v16.4 – Fixed rhythm lattice bug + improved invariance
+# =============================================================================
+
 import numpy as np
-import scipy.signal as signal
 import librosa
-import soundfile as sf
 
-# Function to compute improved CQT with invariance enhancements
-def compute_cqt(y, sr):
-    # Use librosa CQT for log-frequency resolution, promoting pitch invariance
-    cqt = librosa.cqt(y, sr=sr, hop_length=512, n_bins=84, bins_per_octave=12)
-    # Normalize for better invariance to amplitude variations
-    cqt_mag = librosa.amplitude_to_db(np.abs(cqt))
-    return cqt_mag
-
-# Function for rhythm lattice: structured grid for beat patterns
-def rhythm_lattice(beats, tempo, sr, length):
-    # Create a lattice grid for rhythms, improving coherence by aligning to tempo
-    t = np.arange(length) / sr
-    lattice = np.zeros_like(t)
-    beat_interval = 60 / tempo  # seconds per beat
-    for beat in beats:
-        pos = int(beat * sr)
-        if pos < length:
-            lattice[pos] = 1
-    # Interpolate sub-beats for finer lattice (e.g., quarter notes)
-    sub_beats = np.arange(0, len(t) / sr, beat_interval / 4)
-    for sb in sub_beats:
-        pos = int(sb * sr)
-        if pos < length:
-            lattice[pos] = 0.5  # Weaker pulses for sub-divisions
+def rhythm_lattice(beats, tempo, sr, y_length):
+    # Ensure tempo is a scalar
+    if isinstance(tempo, np.ndarray):
+        tempo = tempo.item() if tempo.size == 1 else tempo[0]
+    beat_interval = 60.0 / tempo
+    
+    # Calculate duration correctly
+    duration = y_length / sr
+    
+    # Generate sub-beats at quarter intervals for finer lattice
+    sub_beats = np.arange(0, duration, beat_interval / 4)
+    
+    # Improved rhythm lattice: interpolate for coherence
+    # Create a lattice signal aligned with beats and sub-beats
+    times = np.linspace(0, duration, y_length)
+    lattice = np.zeros(y_length)
+    
+    # Mark beats and sub-beats with decaying impulses for coherence
+    for t in np.concatenate((beats, sub_beats)):
+        if t < duration:
+            idx = int(t * sr)
+            lattice[idx] = 1.0
+            # Add decay for better temporal coherence
+            decay_len = int(sr * 0.05)  # 50ms decay
+            lattice[idx:idx+decay_len] += np.exp(-np.arange(decay_len) / (decay_len / 3))
+    
+    # Normalize for invariance
+    lattice = lattice / np.max(lattice) if np.max(lattice) > 0 else lattice
+    
     return lattice
 
-# Main prototype function
 def main():
-    # Generate synthetic audio for broad sound handling (mix of tones, noise, beats)
     sr = 22050
-    duration = 10  # seconds
-    t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+    # Since no WAV files available, generate synthetic test signal
+    # Synthetic signal: 440Hz tone with modulated amplitude to simulate beats
+    duration = 10.0
+    t = np.linspace(0, duration, int(sr * duration))
+    y = 0.5 * np.sin(2 * np.pi * 440 * t)
+    # Add synthetic beats: amplitude modulation at ~120 BPM
+    beat_freq = 120 / 60.0  # Hz
+    y *= (1 + 0.5 * np.sin(2 * np.pi * beat_freq * t))
+    # Add some noise for broad sound handling
+    y += 0.1 * np.random.randn(len(y))
+    y = y.astype(np.float32)
     
-    # Broad sounds: sine waves, noise, rhythmic elements
-    freq1 = 440  # A4
-    freq2 = 660  # Approx E5 for harmony
-    tone1 = 0.5 * np.sin(2 * np.pi * freq1 * t)
-    tone2 = 0.3 * np.sin(2 * np.pi * freq2 * t)
-    noise = 0.1 * np.random.randn(len(t))  # White noise for broad handling
-    rhythmic_pulse = 0.2 * np.sin(2 * np.pi * 120/60 * t)  # Simulated beat at 120 BPM
+    # Compute CQT with improvements for invariance (normalize)
+    cqt = librosa.cqt(y, sr=sr, hop_length=512, n_bins=84, bins_per_octave=12)
+    cqt_mag = np.abs(cqt)
+    # Normalize for scale invariance
+    cqt_mag = cqt_mag / np.max(cqt_mag) if np.max(cqt_mag) > 0 else cqt_mag
+    print("CQT shape:", cqt.shape)
     
-    y = tone1 + tone2 + noise + rhythmic_pulse  # Combined signal
+    # Onset strength for tempo estimation
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=512)
     
-    # Compute CQT for analysis, with invariance
-    cqt = compute_cqt(y, sr)
-    print("CQT shape:", cqt.shape)  # Debug
+    # Estimate tempo and beats
+    tempo, beat_frames = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr)
+    print("Estimated tempo:", tempo)
     
-    # Beat tracking for rhythm detection, improved for coherence
-    tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=512, tightness=100)
-    print(f"Estimated tempo: {tempo}")
+    # Convert beat frames to times
+    beats = librosa.frames_to_time(beat_frames, sr=sr)
     
-    # Generate rhythm lattice for better structure
     y_length = len(y)
+    
+    # Generate rhythm lattice with improvements
     y_beat = rhythm_lattice(beats, tempo, sr, y_length)
     
-    # Smooth pulses with Gaussian for realism, fixing the import issue
-    gauss_window = signal.windows.gaussian(200, std=10)
-    y_beat = signal.convolve(y_beat, gauss_window, mode='same')
-    
-    # Normalize
-    y_beat /= np.max(np.abs(y_beat)) + 1e-8
-    
-    # Mix with original for coherent output
-    output = y + 0.5 * y_beat  # Enhance rhythm coherence
-    
-    # Handle broad sounds: apply dynamic range compression for various input types
-    output = librosa.util.normalize(output)
-    
-    # Save output
-    sf.write('output.wav', output, sr)
-    print("Output saved as output.wav")
+    # For demonstration, print some stats
+    print("Rhythm lattice generated with length:", len(y_beat))
+    print("Max lattice value:", np.max(y_beat))
 
 if __name__ == "__main__":
     main()
