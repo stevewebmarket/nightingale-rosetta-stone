@@ -3,7 +3,7 @@
 # Originator: Stephen OConnor (@nightingalemap) – The Nightingale Mapping
 # Date: April 17, 2026
 # Live Hub: https://github.com/stevewebmarket/nightingale-rosetta-stone
-# v16.4 – Fixed Tempo Estimation + Rhythm Lattice Improvements
+# v16.4 – Fixed Depreciation + Autocorrelation + CQT Enhancements
 # =============================================================================
 
 import librosa
@@ -11,34 +11,31 @@ import numpy as np
 
 def analyze_audio(file):
     y, sr = librosa.load(file, sr=22050)
-    hop_length = 512
-    # Compute onset envelope
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
-    # Tempo estimation (fixed to use librosa.beat.tempo)
-    tempo = librosa.beat.tempo(onset_envelope=onset_env, sr=sr, hop_length=hop_length, aggregate=np.median)
+    print(f"Analyzing {file}")
+
+    # For CQT invariance: Compute CQT spectrogram and use for onset strength
+    cqt = np.abs(librosa.cqt(y=y, sr=sr, hop_length=512, n_bins=84, bins_per_octave=12))
+    onset_env = librosa.onset.onset_strength(S=librosa.amplitude_to_db(cqt), sr=sr, aggregate=np.median, max_size=5)
+
+    # Tempo estimation with improved coherence using beat_track
+    tempo, beats = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr, hop_length=512)
     print(f"Estimated tempo for {file}: {tempo} BPM")
-    
-    # Improved rhythm lattice: Compute tempogram for better rhythm representation
-    tempogram = librosa.feature.tempogram(onset_envelope=onset_env, sr=sr, hop_length=hop_length)
-    # Simple coherence measure: Autocorrelation of tempogram for rhythmic stability
-    tempogram_auto = librosa.util.autocorrelate(tempogram, axis=0)
-    coherence = np.mean(np.max(tempogram_auto, axis=0))
-    print(f"Rhythmic coherence for {file}: {coherence}")
-    
-    # CQT for spectral features with invariance (log-frequency scaling)
-    cqt = librosa.cqt(y, sr=sr, hop_length=hop_length, n_bins=84, bins_per_octave=12)
-    cqt_mag = librosa.amplitude_to_db(np.abs(cqt))
-    # Invariance: Normalize for shift-invariance in octaves
-    cqt_norm = librosa.util.normalize(cqt_mag, axis=0)
-    print(f"CQT shape for {file}: {cqt_norm.shape}")
-    
-    # Broad sound handling: Additional features for non-musical sounds (e.g., spectral centroid)
-    centroid = librosa.feature.spectral_centroid(y=y, sr=sr, hop_length=hop_length)
-    print(f"Average spectral centroid for {file}: {np.mean(centroid)} Hz")
 
-# List of available WAV files
-files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
+    # Tempogram for rhythm lattice: Autocorrelation tempogram with broader handling
+    hop_length = 512
+    win_length = 384  # Adjustable for broader sound types (e.g., non-metric like birdsong)
+    tempogram = librosa.feature.tempogram(onset_envelope=onset_env, sr=sr, hop_length=hop_length, win_length=win_length)
 
-# Analyze each file
-for file in files:
-    analyze_audio(file)
+    # Autocorrelate along time axis for enhanced rhythm lattice coherence
+    tempogram_auto = librosa.autocorrelate(tempogram, axis=0)
+
+    # Example improvement: Compute mean autocorrelation for simple metric applicability
+    mean_auto = np.mean(tempogram_auto, axis=0)
+    print(f"Mean autocorrelation shape for {file}: {mean_auto.shape}")
+
+    # Further analysis can be added here for structure-specific invariance
+
+if __name__ == "__main__":
+    files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
+    for file in files:
+        analyze_audio(file)
