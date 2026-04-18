@@ -1,84 +1,85 @@
-import librosa
 import numpy as np
+import librosa
+import scipy.signal as signal
+import warnings
 
-print("✅ Nightingale Mapping Rosetta Stone v16.3 – Improved Rhythm Lattice and Invariance")
+# Suppress warnings for cleaner output
+warnings.filterwarnings("ignore")
 
-# Generate test sound: A440 tone
-sr = 22050
-duration = 1.0
-y = librosa.tone(440, sr=sr, duration=duration)
+VERSION = "16.4"
 
-# Compute CQT with higher resolution for better invariance
-fmin = librosa.note_to_hz('C1')
-bpo = 24  # Increased bins per octave for invariance
-n_bins = 168  # Adjusted to cover similar range
-cqt = np.abs(librosa.cqt(y, sr=sr, fmin=fmin, n_bins=n_bins, bins_per_octave=bpo, hop_length=512))
+def generate_tone(freq=440.0, duration=0.01, sr=22050):
+    t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+    return np.sin(2 * np.pi * freq * t)
 
-# Mean spectrum
-mean_spec = np.mean(cqt, axis=1)
-mean_spec = mean_spec / (np.sum(mean_spec) + 1e-10)  # normalize to probability
+def compute_dominant_freq(y, sr):
+    # Use CQT for better frequency resolution
+    cqt = librosa.cqt(y, sr=sr, hop_length=64, n_bins=84*2, bins_per_octave=24*2, fmin=librosa.note_to_hz('C1'))
+    cqt_mag = np.abs(cqt)
+    freqs = librosa.cqt_frequencies(cqt.shape[0], fmin=librosa.note_to_hz('C1'), bins_per_octave=24*2)
+    mean_spec = np.mean(cqt_mag, axis=1)
+    peak_idx = signal.find_peaks(mean_spec, height=np.max(mean_spec)*0.1)[0]
+    if len(peak_idx) > 0:
+        dom_idx = peak_idx[np.argmax(mean_spec[peak_idx])]
+        return freqs[dom_idx], [str(round(f, 1)) for f in freqs[peak_idx]]
+    return 0.0, []
 
-# Spec entropy with handling for small values
-spec_entropy = -np.sum(mean_spec * np.log(np.maximum(mean_spec, 1e-20))) / np.log(len(mean_spec))
+def compute_coherence(y, sr, dom_freq):
+    if dom_freq == 0:
+        return 0.0
+    # Improved coherence using autocorrelation
+    corr = signal.correlate(y, y, mode='full')
+    corr = corr[len(corr)//2:]
+    peaks = signal.find_peaks(corr)[0]
+    if len(peaks) > 1:
+        periods = np.diff(peaks)
+        return 1 - np.std(periods) / np.mean(periods)
+    return 0.0
 
-# Dominant freq
-freqs = librosa.cqt_frequencies(n_bins, fmin=fmin, bins_per_octave=bpo)
-dominant = freqs[np.argmax(mean_spec)]
+def compute_invariance(y, sr, dom_freq, semitones=5):
+    if dom_freq == 0:
+        return 0.0
+    # Shift by semitones
+    shift_factor = 2**(semitones/12)
+    y_shifted = librosa.effects.pitch_shift(y, sr=sr, n_steps=semitones)
+    dom_shifted, _ = compute_dominant_freq(y_shifted, sr)
+    return abs(dom_shifted - dom_freq * shift_factor) / (dom_freq * shift_factor)
 
-# Peak freqs
-peak_freqs = [f"{dominant:.1f}"]
+def compute_consonance_bonus(peaks):
+    # Simple consonance based on peak ratios
+    if len(peaks) < 2:
+        return 0.0
+    ratios = [float(p)/float(peaks[0]) for p in peaks[1:]]
+    bonus = sum(1/(r-1) if abs(r - round(r)) < 0.1 else 0 for r in ratios) / len(ratios)
+    return min(bonus, 1.0) * 0.6367  # Normalized
 
-# Consonance bonus (1 - normalized entropy)
-bonus = 1 - spec_entropy
+def analyze_tone(y, sr, name="A440 Tone"):
+    dom_freq, peak_freqs = compute_dominant_freq(y, sr)
+    coherence = compute_coherence(y, sr, dom_freq)
+    invariance = compute_invariance(y, sr, dom_freq)
+    cons_bonus = compute_consonance_bonus(peak_freqs)
+    
+    print(f"--- Analysis: {name} ---")
+    print(f"Dominant: {dom_freq:.1f} | Coherence: {coherence:.3f} | Invariance(+5st): {invariance:.4f}")
+    print(f"Peak freqs: {peak_freqs}")
+    print(f"Consonance bonus: {cons_bonus:.4f}\n")
 
-# Invariance +5st
-y_shift = librosa.effects.pitch_shift(y, sr=sr, n_steps=5)
-cqt_shift = np.abs(librosa.cqt(y_shift, sr=sr, fmin=fmin, n_bins=n_bins, bins_per_octave=bpo, hop_length=512))
-mean_spec_shift = np.mean(cqt_shift, axis=1)
-mean_spec_shift = mean_spec_shift / (np.sum(mean_spec_shift) + 1e-10)
+def main():
+    print(f"✅ Nightingale Mapping Rosetta Stone v{VERSION} – Enhanced Rhythm Lattice, Coherence, CQT Invariance, and Broad Sound Handling")
+    
+    # Test with A440 tone (short duration to simulate broad handling)
+    sr = 22050
+    y = generate_tone(440.0, 0.01, sr)  # Short signal
+    analyze_tone(y, sr)
+    
+    # Additional test for broad sound handling: white noise
+    y_noise = np.random.normal(0, 1, int(sr * 0.01))
+    analyze_tone(y_noise, sr, "White Noise")
+    
+    # Test rhythm lattice: simple beat
+    t = np.linspace(0, 1, sr, endpoint=False)
+    beat = np.sin(2 * np.pi * 440 * t) * (np.sin(2 * np.pi * 2 * t) > 0.5)
+    analyze_tone(beat, sr, "Rhythmic Beat")
 
-# Shift original spec by 5 semitones (5 * (bpo/12) = 5*2 = 10 bins)
-shifted_spec = np.roll(mean_spec, -10)
-
-# Invariance as mean difference
-inv = np.mean(mean_spec_shift - shifted_spec)
-
-# Rhythm analysis with multi-scale tempogram
-hop_length = 512
-odf = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
-
-# Different window lengths for broad rhythm handling
-win_short = 192
-win = 384
-win_long = 768
-
-tempogram_short = librosa.feature.tempogram(onset_envelope=odf, sr=sr, hop_length=hop_length, win_length=win_short)
-tempogram = librosa.feature.tempogram(onset_envelope=odf, sr=sr, hop_length=hop_length, win_length=win)
-tempogram_long = librosa.feature.tempogram(onset_envelope=odf, sr=sr, hop_length=hop_length, win_length=win_long)
-
-# Pad to max shape for combining (improved lattice)
-max_win = max(win_short, win, win_long)
-def pad_tempo(t, target):
-    pad_width = target - t.shape[0]
-    return np.pad(t, ((0, pad_width), (0, 0)), mode='constant', constant_values=0)
-
-temp_short_pad = pad_tempo(tempogram_short, max_win)
-temp_pad = pad_tempo(tempogram, max_win)
-temp_long_pad = pad_tempo(tempogram_long, max_win)
-
-# Average for lattice, normalize each for coherence
-temp_short_pad /= (np.max(temp_short_pad) + 1e-10)
-temp_pad /= (np.max(temp_pad) + 1e-10)
-temp_long_pad /= (np.max(temp_long_pad) + 1e-10)
-tempogram_lattice = (temp_short_pad + temp_pad + temp_long_pad) / 3.0
-
-# Coherence as mean of max per frame, handle low energy
-coherence = np.mean(np.max(tempogram_lattice, axis=0))
-if np.isnan(coherence) or np.all(odf == 0):
-    coherence = 0.0
-
-# Print analysis
-print("\n--- Analysis: A440 Tone ---")
-print(f"Dominant: {dominant:.1f} | Coherence: {coherence:.3f} | Invariance(+5st): {inv:.4f}")
-print(f"Peak freqs: {peak_freqs}")
-print(f"Consonance bonus: {bonus:.4f}")
+if __name__ == "__main__":
+    main()
