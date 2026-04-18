@@ -3,55 +3,61 @@
 # Originator: Stephen OConnor (@nightingalemap) – The Nightingale Mapping
 # Date: April 17, 2026
 # Live Hub: https://github.com/stevewebmarket/nightingale-rosetta-stone
-# v16.4 – Improved Rhythm Lattice, Coherence, CQT Invariance, and Broad Sound Handling
+# v16.4 – Enhanced Rhythm Lattice, Coherence, CQT Invariance, Broad Handling
 # =============================================================================
 
 import librosa
 import numpy as np
+import os
 
-files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
+# List of available WAV files
+wav_files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
 
-if not files:
-    # Fall back to synthetic test signals if no files
+# Fallback synthetic signal if no files
+if not wav_files:
+    print("No WAV files available. Generating synthetic test signal.")
     duration = 5.0
     sr = 22050
-    t = np.linspace(0, duration, int(sr * duration))
-    y = np.sin(2 * np.pi * 440 * t)  # Simple sine wave
-    files = ['synthetic.wav']  # Placeholder, but analyze y directly
-    print("No WAV files found. Using synthetic test signal.")
+    t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+    y = np.sin(440 * 2 * np.pi * t)  # 440 Hz sine wave
+    wav_files = ['synthetic']
 else:
     print("Analyzing available WAV files.")
 
-for file in files:
+for file in wav_files:
     print(f"Analyzing {file}")
-    if 'synthetic' in file:
-        # Use synthetic y from above
+    
+    if file == 'synthetic':
+        # Use the synthetic y and sr
         pass
     else:
+        # Load the audio file
         y, sr = librosa.load(file, sr=22050)
     
-    # Improved: Use CQT for onset strength to enhance CQT invariance
-    cqt = librosa.cqt(y=y, sr=sr, hop_length=512)
-    S = np.abs(cqt)
-    oenv = librosa.onset.onset_strength(S=S, lag=1, max_size=1)
+    # Compute onset envelope for rhythm analysis
+    hop_length = 512
+    oenv = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
     
-    # For better coherence, smooth the onset envelope
-    oenv = librosa.util.normalize(oenv)
+    # Improved rhythm lattice: Use tempogram for multi-resolution rhythm analysis
+    tempogram = librosa.feature.tempogram(onset_envelope=oenv, sr=sr, hop_length=hop_length)
     
-    # Standard tempo estimation
-    tempo = librosa.beat.tempo(onset_envelope=oenv, sr=sr, hop_length=512)
-    
-    # Improved rhythm lattice and broad sound handling: If tempo is 0, fall back to tempogram-based estimation
-    # Tempogram provides a lattice of tempo strengths
-    if tempo[0] == 0:
-        tg = librosa.feature.tempogram(onset_envelope=oenv, sr=sr, hop_length=512, norm=None)
-        mean_tg = np.mean(tg, axis=1)  # Mean over time for coherence
-        bpm = librosa.tempo_frequencies(len(mean_tg), hop_length=512, sr=sr)
-        idx = np.argmax(mean_tg)
-        tempo = np.array([bpm[idx]])
-    
+    # Estimate tempo from tempogram for coherence
+    tempo = librosa.feature.rhythm.tempo(onset_envelope=oenv, sr=sr, hop_length=hop_length)
     print(f"Estimated tempo for {file}: {tempo} BPM")
     
-    # Compute autocorrelation for consistency with previous outputs
-    ac = librosa.autocorrelate(oenv)
-    print(f"Mean autocorrelation shape for {file}: {ac.shape}")
+    # Enhance coherence: Compute mean autocorrelation across tempogram frames
+    autocorr = librosa.autocorrelate(tempogram.T, axis=0)  # Transpose for frame-wise autocorrelation
+    mean_autocorr = np.mean(autocorr, axis=0)
+    print(f"Mean autocorrelation shape for {file}: {mean_autocorr.shape}")
+    
+    # CQT invariance: Compute CQT and derive invariant chroma features
+    cqt = librosa.cqt(y, sr=sr, hop_length=hop_length, n_bins=84, bins_per_octave=12)
+    cqt_mag = np.abs(cqt)
+    chroma = librosa.feature.chroma_cqt(C=cqt_mag, sr=sr, hop_length=hop_length, n_chroma=12, threshold=0.0)
+    # For demonstration, print mean chroma shape (invariance to octave shifts)
+    print(f"Mean chroma shape for {file} (CQT invariant): {chroma.shape}")
+    
+    # Broad sound handling: Adaptive normalization for diverse sounds (e.g., birdsong noise, orchestral dynamics, rock distortion)
+    y_normalized = librosa.util.normalize(y)
+    rms = librosa.feature.rms(y=y_normalized)
+    print(f"Average RMS for {file} (normalized): {np.mean(rms)}")
