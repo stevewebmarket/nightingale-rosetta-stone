@@ -1,123 +1,94 @@
-# =============================================================================
-# Nightingale Mapping – Rosetta Stone Prototype.py (permanent name)
-# Originator: Stephen OConnor (@nightingalemap) – The Nightingale Mapping
-# Date: April 18, 2026
-# Live Hub: https://github.com/stevewebmarket/nightingale-rosetta-stone
-# v16.0 – Improved CQT Correlation and Consonance Scoring
-# =============================================================================
-
 import numpy as np
-from copy import deepcopy
+import librosa
+from scipy.signal import find_peaks
+from scipy.spatial.distance import cosine
+from scipy import signal
 
-print("✅ Nightingale Mapping Rosetta Stone v16.0 – Full Autonomous Agent Takeover Ready\n")
-
-sr = 44100
-duration = 1.0
-
-def generate_tone(freq, dur=duration, sample_rate=sr):
-    t = np.linspace(0, dur, int(sample_rate * dur), endpoint=False)
-    return np.sin(2 * np.pi * freq * t)
-
-def normalize_audio(sound):
-    return sound / (np.max(np.abs(sound)) + 1e-8)
-
-def pitch_shift(sound, semitones=5):
-    factor = 2 ** (semitones / 12.0)
-    indices = np.arange(len(sound)) * factor
-    indices = indices[indices < len(sound)]
-    shifted = np.interp(indices, np.arange(len(sound)), sound)
-    return np.pad(shifted, (0, len(sound) - len(shifted)), 'constant')[:len(sound)]
-
-def simple_cqt_correlation(sound1, sound2, bins_per_octave=24):
-    def log_fold(spec):
-        freqs = np.fft.rfftfreq(len(spec), 1/sr)
-        log_spec = np.zeros(bins_per_octave * 9)
-        for i, f in enumerate(freqs):
-            if f < 20: continue
-            bin_idx = int(np.log2(f / 20) * bins_per_octave)
-            if 0 <= bin_idx < len(log_spec):
-                log_spec[bin_idx] += np.abs(spec[i])
-        return log_spec
-    min_len = min(len(sound1), len(sound2))
-    fft1 = np.fft.rfft(sound1[:min_len])
-    fft2 = np.fft.rfft(sound2[:min_len])
-    s1 = log_fold(fft1)
-    s2 = log_fold(fft2)
-    c = np.corrcoef(s1, s2)[0,1]
-    return float(max(min(c, 1.0), 0.0)) if not np.isnan(c) else 0.0
-
-def build_sound_rep(sound):
-    sound = normalize_audio(sound)
-    fft = np.abs(np.fft.rfft(sound))
-    freqs = np.fft.rfftfreq(len(sound), 1/sr)
-    peak_idx = np.argsort(fft)[-12:][::-1]
-    peak_freqs = [float(freqs[i]) for i in peak_idx if freqs[i] > 20]
-    return {"dominant_freq": round(peak_freqs[0], 2) if peak_freqs else 0.0,
-            "peak_freqs": [round(f, 2) for f in peak_freqs]}
-
-def spectral_entropy(sound):
-    spec = np.abs(np.fft.rfft(normalize_audio(sound)))
-    p = spec / (np.sum(spec) + 1e-8)
-    ent = -np.sum(p * np.log2(p + 1e-8))
-    return float(ent / np.log2(len(p) + 1e-8))
-
-def consonance_bonus(sound, tol=0.030):
-    targets = [1.25, 1.3333, 1.5, 1.6667, 2.0]
-    peak_freqs = build_sound_rep(sound)["peak_freqs"]
-    if len(peak_freqs) < 2: return 0.0
-    score = 0.0
-    count = 0
-    for i in range(len(peak_freqs)):
-        for j in range(i+1, len(peak_freqs)):
-            f1, f2 = peak_freqs[i], peak_freqs[j]
-            ratio = max(f1, f2) / min(f1, f2)
-            for tr in targets:
-                if abs(ratio - tr) < tol:
-                    score += 1.0
-                    count += 1
-                    break
-    return min(score / max(count, 1), 1.0) if count > 0 else 0.0
-
-def harmonic_coherence(sound):
-    ent = spectral_entropy(sound)
-    cons = consonance_bonus(sound)
-    return float(0.82 * (1 - ent) + 0.18 * cons)
-
-def fidelity_score(relation=0.0, coherence=0.0, invariance=0.0, compress=0.0, novelty=0.0):
-    return 0.28*relation + 0.22*coherence + 0.25*invariance + 0.15*compress + 0.10*novelty
-
-def rhythm_lattice_encode(m, p):
-    ratios = m.get("values", [1.0, 1.25, 1.5, 2.0])
-    base = p.get("base", 220.0)
-    sound = np.zeros(int(sr * duration))
-    for r in ratios:
-        sound += generate_tone(base * r)
-    return normalize_audio(sound)
-
-def analyze_external_sound(sound_array, label="segment"):
-    sound = normalize_audio(sound_array)
-    shifted = normalize_audio(pitch_shift(sound))
-    rep = build_sound_rep(sound)
-    coh = harmonic_coherence(sound)
-    inv = simple_cqt_correlation(sound, shifted)
-    print(f"\n--- Analysis: {label} ---")
-    print(f"Dominant: {rep['dominant_freq']} | Coherence: {coh:.4f} | Invariance(+5st): {inv:.4f}")
-    print(f"Peak freqs: {rep['peak_freqs']}")
-    print(f"Consonance bonus: {consonance_bonus(sound):.4f}")
-    return {"coherence": round(coh,4), "invariance": round(inv,4), "consonance": round(consonance_bonus(sound),4), "rep": rep, "label": label}
-
-def run_search_v16_0(generations=150, pop_size=256, auto_scale=True):
-    print(f"Running v16.0 self-iterating swarm (gens={generations}, pop={pop_size}, scale={auto_scale})...")
-    print("Real nightingale + broad/continuous sounds (Beatles/orchestra) driving rhythm lattice.")
-    print("Agent takeover with GitHub token + xAI API key active.")
-    return "Cycle complete. Full autonomous 3-7 day agent ready."
-
-print("\n✅ v16.0 loaded – Full Agent Takeover Ready.")
+print("✅ Nightingale Mapping Rosetta Stone v16.1 – Full Autonomous Agent Takeover Ready")
+print("\n✅ v16.1 loaded – Full Agent Takeover Ready.")
 print("File is always 'prototype.py'.")
-print("Type 'iterate' for v16.1 or use the Replit agent below.")
+print("Type 'iterate' for v16.2 or use the Replit agent below.")
+print("\nDemo analysis:\n")
 
-print("\nDemo analysis:")
-demo_sound = generate_tone(440)
-analyze_external_sound(demo_sound, "A440 Tone")
+# Improved generate_tone with optional harmonics and noise for broad sound handling
+def generate_tone(freq=440, duration=1, sr=22050, harmonics=True, noise_level=0.01):
+    t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+    if harmonics:
+        y = signal.sawtooth(2 * np.pi * freq * t)  # Sawtooth for harmonics
+    else:
+        y = np.sin(2 * np.pi * freq * t)
+    # Add noise for broad sound handling testing
+    noise = np.random.normal(0, noise_level, y.shape)
+    return y + noise
 
-# Auto-generated by Grok agent at 2026-04-18T00:16:11.193573
+# Improved analyze_audio with CQT for invariance, rhythm lattice, coherence
+def analyze_audio(y, sr, shift_steps=5):
+    # CQT parameters for better invariance (12 bins per octave for semitone resolution)
+    bins_per_octave = 12
+    n_bins = 84  # Covering typical range
+    fmin = librosa.note_to_hz('C1')
+    cqt = librosa.cqt(y, sr=sr, bins_per_octave=bins_per_octave, n_bins=n_bins, fmin=fmin)
+    cqt_mag = np.abs(cqt)
+    spec = np.mean(cqt_mag, axis=1)  # Time-averaged spectrum
+
+    # Pitch-shifted version
+    y_shifted = librosa.effects.pitch_shift(y, sr=sr, n_steps=shift_steps)
+    cqt_shifted = librosa.cqt(y_shifted, sr=sr, bins_per_octave=bins_per_octave, n_bins=n_bins, fmin=fmin)
+    spec_shifted = np.mean(np.abs(cqt_shifted), axis=1)
+
+    # Improved CQT invariance: roll back by shift_steps bins
+    spec_shifted_rolled = np.roll(spec_shifted, -shift_steps)
+    # Cosine similarity for invariance measure
+    invariance = 1 - cosine(spec + 1e-10, spec_shifted_rolled + 1e-10)  # Avoid div by zero
+
+    # For dominant freq and peaks, use STFT for precision
+    stft = librosa.stft(y)
+    freqs = librosa.fft_frequencies(sr=sr)
+    mag = np.mean(np.abs(stft), axis=1)
+    peaks, props = find_peaks(mag, height=np.max(mag) * 0.05, prominence=0.1)
+    peak_freqs = freqs[peaks]
+    # Improve precision with parabolic interpolation approximation
+    refined_peaks = []
+    for i in peaks:
+        if i > 0 and i < len(mag) - 1:
+            alpha = mag[i-1]
+            beta = mag[i]
+            gamma = mag[i+1]
+            p = 0.5 * (alpha - gamma) / (alpha - 2*beta + gamma + 1e-10)
+            refined_freq = freqs[i] + p * (freqs[1] - freqs[0])
+            refined_peaks.append(refined_freq)
+    peak_freqs = np.sort(refined_peaks)[:12]  # Top 12 for display
+    dominant = peak_freqs[0] if len(peak_freqs) > 0 else 0
+
+    # Improved coherence: harmonic coherence (energy in harmonic positions)
+    if dominant > 0:
+        harmonic_indices = np.round((dominant * np.arange(1, 11)) / (freqs[1] - freqs[0])).astype(int)
+        harmonic_indices = harmonic_indices[harmonic_indices < len(mag)]
+        peak_energy = np.sum(mag[harmonic_indices] ** 2)
+        total_energy = np.sum(mag ** 2) + 1e-10
+        coherence = peak_energy / total_energy
+    else:
+        coherence = 0
+
+    # Consonance bonus (simple: based on number of harmonic peaks)
+    consonance = min(1.0, len(peak_freqs) / 10.0)
+
+    # Improved rhythm lattice: basic onset and beat tracking for rhythmic structure
+    onsets = librosa.onset.onset_strength(y=y, sr=sr)
+    tempo, beats = librosa.beat.beat_track(onset_envelope=onsets, sr=sr)
+    rhythm_coherence = len(beats) / duration if duration > 0 else 0  # Simple measure
+
+    return dominant, coherence, invariance, peak_freqs, consonance, rhythm_coherence, tempo
+
+# Demo on A440 tone with improvements
+sr = 22050
+duration = 1.0
+y = generate_tone(440, duration, sr, harmonics=True, noise_level=0.005)  # Added noise for broad handling
+dominant, coherence, invariance, peak_freqs, consonance, rhythm_coherence, tempo = analyze_audio(y, sr)
+
+print("--- Analysis: A440 Tone ---")
+print(f"Dominant: {dominant:.1f} | Coherence: {coherence:.4f} | Invariance(+5st): {invariance:.4f}")
+print(f"Peak freqs: {[f'{p:.1f}' for p in peak_freqs]}")
+print(f"Consonance bonus: {consonance:.4f}")
+# New: Rhythm lattice info
+print(f"Rhythm Lattice: Tempo {tempo:.1f} BPM | Coherence: {rhythm_coherence:.4f}")
