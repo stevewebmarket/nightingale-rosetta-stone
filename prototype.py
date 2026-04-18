@@ -3,75 +3,62 @@
 # Originator: Stephen OConnor (@nightingalemap) – The Nightingale Mapping
 # Date: April 17, 2026
 # Live Hub: https://github.com/stevewebmarket/nightingale-rosetta-stone
-# v16.4 – Improved Rhythm Lattice, Coherence, CQT Invariance, Broad Sound Handling
+# v16.4 – Improved Rhythm Lattice, Coherence, CQT Invariance, and Broad Sound Handling
 # =============================================================================
 
 import librosa
 import numpy as np
-from librosa.feature.rhythm import tempo as estimate_tempo
+import os
 
-# List of available WAV files
-wav_files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
+def analyze_audio(y, sr, hop_length, file_name):
+    print(f"Analyzing {file_name}")
+    tempo = librosa.beat.tempo(y=y, sr=sr, hop_length=hop_length)
+    print(f"Estimated tempo for {file_name}: {tempo} BPM")
 
-# If no files, fall back to synthetic signals
-if not wav_files:
-    print("No WAV files available. Generating synthetic test signals.")
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
+    ac = librosa.autocorrelate(onset_env)
+    mean_autocorr = np.mean(ac)
+    print(f"Mean autocorrelation value for {file_name}: {mean_autocorr}")
+
+    chroma = librosa.feature.chroma_cens(y=y, sr=sr, hop_length=hop_length)
+    print(f"Chroma shape for {file_name} (CQT invariant): {chroma.shape}")
+
+    rms = librosa.feature.rms(y=y, hop_length=hop_length)[0]
+    avg_rms = np.mean(rms)
+    print(f"Average RMS for {file_name} (normalized): {avg_rms}")
+
+    # Improved rhythm lattice: ignore zero lag to avoid inf, find max lag
+    ac[0] = 0
+    dominant_lag_idx = np.argmax(ac)
+    if dominant_lag_idx == 0:
+        dom_bpm = float('inf')
+    else:
+        beat_duration = dominant_lag_idx * hop_length / sr
+        dom_bpm = 60 / beat_duration
+    print(f"Dominant tempo from rhythm lattice for {file_name}: {dom_bpm} BPM")
+
+    # Improved feature coherence: average correlation per pitch class
+    T = min(chroma.shape[1], len(onset_env))
+    corrs = [np.corrcoef(chroma[i, :T], onset_env[:T])[0, 1] for i in range(12)]
+    coherence = np.mean(corrs)
+    print(f"Feature coherence metric for {file_name}: {coherence}")
+
+if __name__ == "__main__":
     sr = 22050
-    # Synthetic tone
-    y_synth1 = librosa.tone(440, sr=sr, duration=3)
-    # Synthetic beat
-    click = librosa.clicks(times=np.arange(0, 3, 0.5), sr=sr, length=3*sr)
-    y_synth2 = click + 0.5 * librosa.tone(220, sr=sr, duration=3)
-    # Synthetic noise
-    y_synth3 = np.random.randn(3*sr) * 0.1
-    analyses = [
-        ('synthetic_tone', y_synth1),
-        ('synthetic_beat', y_synth2),
-        ('synthetic_noise', y_synth3)
-    ]
-else:
-    print("Analyzing available WAV files.")
-    analyses = []
-    for file in wav_files:
-        y, sr = librosa.load(file, sr=22050)
-        analyses.append((file, y))
+    hop_length = 512
+    files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
+    available = [f for f in files if os.path.exists(f)]
 
-for name, y in analyses:
-    print(f"Analyzing {name}")
-    # Separate harmonic and percussive components for better handling of broad sounds
-    y_harm, y_perc = librosa.effects.hpss(y)
-    
-    # Onset envelope from percussive component
-    oenv = librosa.onset.onset_strength(y=y_perc, sr=sr)
-    
-    # Estimated tempo using median for robustness
-    tempo = estimate_tempo(onset_envelope=oenv, sr=sr, aggregate=np.median)
-    print(f"Estimated tempo for {name}: {tempo} BPM")
-    
-    # Autocorrelation of onset envelope
-    autocorr = librosa.autocorrelate(oenv)
-    mean_autocorr = np.mean(autocorr)
-    print(f"Mean autocorrelation value for {name}: {mean_autocorr}")
-    
-    # Chroma using CQT on harmonic component for improved invariance
-    chroma = librosa.feature.chroma_cqt(y=y_harm, sr=sr)
-    print(f"Chroma shape for {name} (CQT invariant): {chroma.shape}")
-    
-    # Average RMS (normalized by max RMS for consistency)
-    rms = librosa.feature.rms(y=y)[0]
-    avg_rms = np.mean(rms) / (np.max(rms) + 1e-10)  # Avoid division by zero
-    print(f"Average RMS for {name} (normalized): {avg_rms}")
-    
-    # Improved rhythm lattice using tempogram
-    tempogram = librosa.feature.tempogram(onset_envelope=oenv, sr=sr)
-    tg_mean = np.mean(tempogram, axis=1)
-    tempos = librosa.tempo_frequencies(len(tg_mean), sr=sr)
-    dominant_idx = np.argmax(tg_mean)
-    dominant_tempo = tempos[dominant_idx]
-    print(f"Dominant tempo from rhythm lattice for {name}: {dominant_tempo} BPM")
-    
-    # Improved feature coherence: correlation between onset strength and chroma energy
-    chroma_energy = np.mean(chroma, axis=0)
-    min_len = min(len(oenv), len(chroma_energy))
-    coherence = np.corrcoef(oenv[:min_len], chroma_energy[:min_len])[0, 1]
-    print(f"Feature coherence metric for {name}: {coherence}")
+    if available:
+        print("Analyzing available WAV files.")
+        for file in available:
+            y, _ = librosa.load(file, sr=sr)
+            analyze_audio(y, sr, hop_length, file)
+    else:
+        print("No WAV files available. Analyzing synthetic test signals.")
+        # Synthetic tone
+        y = librosa.tone(440, sr=sr, duration=5)
+        analyze_audio(y, sr, hop_length, "synthetic_tone")
+        # Synthetic chirp for variety
+        y = librosa.chirp(fmin=220, fmax=880, sr=sr, duration=5)
+        analyze_audio(y, sr, hop_length, "synthetic_chirp")
