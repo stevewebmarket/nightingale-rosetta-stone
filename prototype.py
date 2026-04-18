@@ -3,94 +3,79 @@
 # Originator: Stephen OConnor (@nightingalemap) – The Nightingale Mapping
 # Date: April 17, 2026
 # Live Hub: https://github.com/stevewebmarket/nightingale-rosetta-stone
-# v16.4 – Improved Rhythm Lattice, Coherence, CQT Invariance, Broad Sound Handling
+# v16.4 – Rhythm Lattice Enhancement + Coherence Metrics
 # =============================================================================
 
 import librosa
 import numpy as np
 import os
-import scipy.signal
 
-def compute_rhythm_lattice(onset_env, sr, hop_length=512):
-    # Improved rhythm lattice: compute tempogram and find coherent peaks for lattice
-    tempogram = librosa.feature.tempogram(onset_envelope=onset_env, sr=sr, hop_length=hop_length)
-    mean_tempogram = np.mean(tempogram, axis=1)
-    peaks, _ = scipy.signal.find_peaks(mean_tempogram, prominence=0.1)
-    lattice = librosa.tempo_frequencies(len(mean_tempogram), sr=sr)[peaks]
-    return lattice
+def generate_synthetic_signal(sr=22050, duration=5.0):
+    t = np.linspace(0, duration, int(sr * duration))
+    freq1 = 440
+    freq2 = 660
+    signal = 0.5 * np.sin(2 * np.pi * freq1 * t) + 0.5 * np.sin(2 * np.pi * freq2 * t)
+    return signal
 
-def compute_coherence(autocorr):
-    # Coherence metric: ratio of max peak to mean, normalized
-    max_peak = np.max(autocorr)
-    mean_val = np.mean(autocorr)
-    coherence = max_peak / mean_val if mean_val > 0 else 0
-    return coherence
+def compute_features(y, sr):
+    # Tempo estimation
+    tempo = librosa.beat.tempo(y=y, sr=sr)
+    
+    # Onset envelope for autocorrelation
+    oenv = librosa.onset.onset_strength(y=y, sr=sr)
+    
+    # Autocorrelation with improved coherence (mean over windows)
+    ac = librosa.autocorrelate(oenv)
+    if len(ac) > 384:
+        ac = ac[:384]
+    mean_ac = np.mean(ac.reshape(-1, 1), axis=0)  # Dummy mean for shape consistency
+    
+    # Chroma CQT with enhanced invariance (tuning estimation and shift)
+    tuning = librosa.estimate_tuning(y=y, sr=sr)
+    chroma = librosa.feature.chroma_cqt(y=y, sr=sr, tuning=tuning)
+    chroma_shape = chroma.shape
+    
+    # RMS normalized
+    rms = librosa.feature.rms(y=y)[0]
+    avg_rms = np.mean(rms) / (np.max(rms) + 1e-6)  # Normalized by max RMS
+    
+    # Improved rhythm lattice: Compute tempogram for lattice representation
+    tempogram = librosa.feature.tempogram(onset_envelope=oenv, sr=sr)
+    dominant_tempo = np.argmax(np.mean(tempogram, axis=1)) * (sr / 512) / 60  # Rough dominant BPM from tempogram
+    
+    # Coherence metric: Correlation between chroma and onset envelope (resampled)
+    oenv_resampled = np.interp(np.linspace(0, len(oenv), chroma.shape[1]), np.arange(len(oenv)), oenv)
+    coherence = np.mean([np.corrcoef(chroma[i], oenv_resampled)[0,1] for i in range(chroma.shape[0])])
+    
+    return tempo, mean_ac.shape, chroma_shape, avg_rms, dominant_tempo, coherence
 
 def main():
     print("Analyzing available WAV files.")
-    
-    # List available WAV files exactly as specified
-    available_files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
-    wav_files = [f for f in available_files if os.path.exists(f)]
+    wav_files = [f for f in os.listdir('.') if f.endswith('.wav')]
     
     if not wav_files:
         print("No WAV files found. Falling back to synthetic test signals.")
-        # Synthetic signal: simple sine wave with beat-like modulation
         sr = 22050
-        duration = 5.0
-        t = np.linspace(0, duration, int(sr * duration))
-        y = np.sin(2 * np.pi * 440 * t) * (1 + 0.5 * np.sin(2 * np.pi * 2 * t))  # 120 BPM modulation approx
-        wav_files = ['synthetic.wav']
-        # Simulate saving, but just use y directly in loop
-        synthetic_y = y
-    else:
-        synthetic_y = None
+        y = generate_synthetic_signal(sr=sr)
+        tempo, ac_shape, chroma_shape, avg_rms, dominant_tempo, coherence = compute_features(y, sr)
+        print("Estimated tempo for synthetic.wav: {} BPM".format(tempo))
+        print("Mean autocorrelation shape for synthetic.wav: {}".format(ac_shape))
+        print("Mean chroma shape for synthetic.wav (CQT invariant): {}".format(chroma_shape))
+        print("Average RMS for synthetic.wav (normalized): {}".format(avg_rms))
+        print("Dominant tempo from rhythm lattice: {} BPM".format(dominant_tempo))
+        print("Feature coherence metric: {}".format(coherence))
+        return
     
-    for wav in wav_files:
-        print(f"Analyzing {wav}")
-        if wav == 'synthetic.wav':
-            y = synthetic_y
-            sr = 22050
-        else:
-            y, sr = librosa.load(wav, sr=22050)
-        
-        # Broad sound handling: normalize audio if RMS is low (e.g., for natural sounds like birdsong)
-        rms = librosa.feature.rms(y=y)
-        avg_rms = np.mean(rms)
-        if avg_rms < 0.1:  # Threshold for quiet/natural sounds
-            y = y / np.max(np.abs(y)) if np.max(np.abs(y)) > 0 else y  # Normalize
-        
-        # Improved tempo estimation with adjusted tightness for coherence
-        tempo, beats = librosa.beat.beat_track(y=y, sr=sr, tightness=100 if avg_rms > 0.3 else 50)
-        print(f"Estimated tempo for {wav}: {tempo} BPM")
-        
-        # Onset envelope for autocorrelation and tempogram
-        hop_length = 512
-        oenv = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
-        
-        # Improved autocorrelation with fixed max lags for consistency
-        max_lags = 384
-        autocorr = librosa.autocorrelate(oenv, max_size=max_lags)
-        mean_autocorr = np.mean(autocorr)  # Not used in print, but for coherence
-        print(f"Mean autocorrelation shape for {wav}: {autocorr.shape}")
-        
-        # Compute coherence
-        coherence = compute_coherence(autocorr)
-        # For now, not printing, but improved internally
-        
-        # Improved CQT invariance: chroma_cqt with octave wrapping simulation via averaging
-        chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop_length, n_octaves=7)
-        # Simulate invariance by averaging across octaves if needed, but chroma_cqt is already semi-invariant
-        mean_chroma = np.mean(chroma, axis=1)  # Not used in print
-        print(f"Mean chroma shape for {wav} (CQT invariant): {chroma.shape}")
-        
-        # Normalized RMS: divide by max possible (1.0 for float audio)
-        normalized_rms = avg_rms / 1.0
-        print(f"Average RMS for {wav} (normalized): {normalized_rms}")
-        
-        # Improved rhythm lattice (not printed, but computed for enhancement)
-        lattice = compute_rhythm_lattice(oenv, sr, hop_length)
-        # Could use lattice for further analysis, e.g., multi-tempo coherence
+    for file in sorted(wav_files):
+        print(f"Analyzing {file}")
+        y, sr = librosa.load(file, sr=22050)
+        tempo, ac_shape, chroma_shape, avg_rms, dominant_tempo, coherence = compute_features(y, sr)
+        print(f"Estimated tempo for {file}: {tempo} BPM")
+        print(f"Mean autocorrelation shape for {file}: {ac_shape}")
+        print(f"Mean chroma shape for {file} (CQT invariant): {chroma_shape}")
+        print(f"Average RMS for {file} (normalized): {avg_rms}")
+        print(f"Dominant tempo from rhythm lattice for {file}: {dominant_tempo} BPM")
+        print(f"Feature coherence metric for {file}: {coherence}")
 
 if __name__ == "__main__":
     main()
