@@ -3,100 +3,76 @@
 # Originator: Stephen OConnor (@nightingalemap) – The Nightingale Mapping
 # Date: April 17, 2026
 # Live Hub: https://github.com/stevewebmarket/nightingale-rosetta-stone
-# v16.4 – Argument Fix + Enhanced Rhythm Lattice, Coherence, CQT Invariance, Broad Handling
+# v16.4 – Error Fix + Enhanced Rhythm Lattice, Coherence, CQT Invariance, Broad Sound Handling
 # =============================================================================
 
 import librosa
 import numpy as np
 import os
 
-def classify_sound_type(y, sr):
-    centroid = np.mean(librosa.feature.spectral_centroid(y=y, sr=sr))
-    if centroid > 5000:
-        return 'high-centroid', 'rock/percussive', 'tight'
-    elif centroid > 2000:
-        return 'mid-centroid', 'orchestral', 'balanced'
-    else:
-        return 'low-centroid', 'ambient', 'loose'
+def compute_rhythm_lattice(onset_times):
+    """Improved rhythm lattice: cluster intervals for better coherence."""
+    intervals = np.diff(onset_times)
+    # Quantize to a lattice (e.g., multiples of 0.1s for simplicity)
+    lattice = np.round(intervals / 0.1) * 0.1
+    coherence = 1 - np.var(lattice) / np.mean(lattice) if np.mean(lattice) > 0 else 0
+    return lattice, coherence
 
-def build_rhythm_lattice(beats, onsets, tempo, hop_length):
-    # Improved rhythm lattice: create a grid of rhythmic events with coherence across multiples
-    # Enhance coherence by aligning to tempo multiples and subdivisions
-    beat_intervals = np.diff(beats)
-    if len(beat_intervals) == 0:
-        return np.array([])
-    base_interval = np.mean(beat_intervals)
-    lattice = np.arange(0, len(beats) * base_interval, base_interval / 4)  # Subdivide for finer lattice
-    # Snap onsets to lattice for coherence
-    snapped_onsets = np.array([np.argmin(np.abs(lattice - o)) for o in onsets])
-    unique_snapped = np.unique(snapped_onsets)
-    return lattice[unique_snapped]
-
-def analyze_audio(y, sr, detection_type):
-    # Fixed: Added detection_type parameter to handle varying onset detection strategies
-    # Broad sound handling: Adjust parameters based on type
-    if detection_type == 'tight':
-        hop_length = 256
-        pre_max = 0.01
-        post_max = 0.01
-    elif detection_type == 'balanced':
-        hop_length = 512
-        pre_max = 0.03
-        post_max = 0.03
-    else:
-        hop_length = 1024
-        pre_max = 0.05
-        post_max = 0.05
-
-    # Onset detection with adjusted parameters for type
-    onsets = librosa.onset.onset_detect(y=y, sr=sr, hop_length=hop_length, backtrack=True, pre_max=pre_max, post_max=post_max, units='samples')
-
-    # Tempo and beat tracking for rhythm foundation
-    tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=hop_length)
-
-    # Build improved rhythm lattice with coherence
-    lattice = build_rhythm_lattice(beats, onsets, tempo, hop_length)
-    
-    # CQT for pitch features with invariance enhancements
-    # Improve CQT invariance: Use log-amplitude and normalize for shift invariance
-    cqt = np.abs(librosa.cqt(y, sr=sr, hop_length=hop_length, n_bins=84, bins_per_octave=12))
-    cqt_log = librosa.amplitude_to_db(cqt)
-    # Normalize per frame for basic invariance to overall level
-    cqt_norm = cqt_log - np.mean(cqt_log, axis=0, keepdims=True)
-    # For octave invariance, could fold into chroma, but here we keep full CQT with normalization
-
-    # Output some analysis results (expandable for mapping)
-    print(f"  Onsets detected: {len(onsets)}")
-    print(f"  Tempo: {tempo:.2f} BPM")
-    print(f"  Rhythm lattice points: {len(lattice)}")
-    print(f"  CQT shape (invariant-normalized): {cqt_norm.shape}")
-
-# List of available files
-files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
-
-print("Analyzing available WAV files.")
-
-for file in files:
-    if not os.path.exists(file):
-        print(f"File {file} not found, skipping.")
-        continue
-    print(f"Analysis for {file}:")
+def analyze(file):
     y, sr = librosa.load(file, sr=22050)
-    type_id, example, detection = classify_sound_type(y, sr)
-    print(f"  Detected {type_id} sound (e.g., {example}), using {detection} onset detection.")
-    try:
-        analyze_audio(y, sr, detection)
-    except Exception as e:
-        print(f"  Error analyzing {file}: {str(e)}")
-    print("---")
+    
+    # Compute spectral centroid for sound type classification
+    centroid = librosa.feature.spectral_centroid(y=y, sr=sr)
+    mean_centroid = np.mean(centroid)
+    
+    # Classify sound type and adjust onset detection
+    if mean_centroid < 1500:
+        sound_type = "low-centroid sound (e.g., ambient)"
+        onset_params = {'backtrack': True, 'tightness': 50}  # Loose for broad, ambient sounds
+    elif mean_centroid > 4000:
+        sound_type = "high-centroid sound (e.g., percussive)"
+        onset_params = {'backtrack': False, 'tightness': 200}  # Tight for sharp sounds
+    else:
+        sound_type = "mid-centroid sound (e.g., orchestral)"
+        onset_params = {}  # Balanced defaults
+    
+    print(f"  Detected {sound_type}, using {'loose' if 'low' in sound_type else 'tight' if 'high' in sound_type else 'balanced'} onset detection.")
+    
+    # Detect onsets with adjusted parameters
+    onsets = librosa.onset.onset_detect(y=y, sr=sr, **onset_params)
+    print(f"  Onsets detected: {len(onsets)}")
+    
+    # Compute onset times
+    onset_times = librosa.frames_to_time(onsets, sr=sr)
+    
+    # Improved rhythm lattice and coherence
+    lattice, coherence = compute_rhythm_lattice(onset_times)
+    print(f"  Rhythm lattice coherence: {coherence:.2f}")
+    
+    # Tempo estimation with aggregate to avoid array format issues
+    oe = librosa.onset.onset_strength(y=y, sr=sr)
+    tempo = librosa.beat.tempo(onset_envelope=oe, sr=sr, aggregate=np.mean)
+    print(f"  Estimated tempo: {tempo:.2f} BPM")
+    
+    # CQT with invariance improvements (log amplitude for scale invariance)
+    # Adjust fmin for broad sound handling based on type
+    fmin = librosa.note_to_hz('C2') if 'low' in sound_type else librosa.note_to_hz('C1') if 'high' in sound_type else None
+    cqt = librosa.cqt(y=y, sr=sr, fmin=fmin)
+    cqt_db = librosa.amplitude_to_db(np.abs(cqt))  # Log scale for invariance
+    print(f"  CQT shape (invariant): {cqt_db.shape}")
+    
+    # Additional broad sound handling: adjust hop_length dynamically
+    hop_length = 512 if 'mid' in sound_type else 1024 if 'low' in sound_type else 256
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, hop_length=hop_length)
+    print(f"  MFCC mean (adjusted hop): {np.mean(mfcc):.2f}")
 
-# Fallback if no files (though list is not empty)
-if not files:
-    print("No WAV files available, generating synthetic test signal.")
-    duration = 5.0
-    sr = 22050
-    t = np.linspace(0, duration, int(sr * duration), endpoint=False)
-    y = np.sin(440 * 2 * np.pi * t)  # Simple sine wave
-    type_id, example, detection = classify_sound_type(y, sr)
-    print(f"Detected {type_id} sound (e.g., {example}), using {detection} onset detection.")
-    analyze_audio(y, sr, detection)
+if __name__ == "__main__":
+    print("Analyzing available WAV files.")
+    files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
+    for file in files:
+        print(f"Analysis for {file}:")
+        try:
+            analyze(file)
+        except Exception as e:
+            print(f"  Error analyzing {file}: {str(e)}")
+        print("---")
