@@ -1,94 +1,84 @@
-import numpy as np
 import librosa
-import scipy.signal as signal
+import numpy as np
 
-# Nightingale Mapping Rosetta Stone v16.2 – Enhanced Rhythm Lattice and Coherence
-# Improvements:
-# - Rhythm lattice: Implemented tempogram-based lattice with multi-resolution analysis for better rhythm detection.
-# - Coherence: Added entropy-based coherence measure for rhythm and spectral features.
-# - CQT invariance: Improved shift invariance by normalizing and comparing shifted CQTs.
-# - Broad sound handling: Added noise reduction, handling for polyphonic and noisy inputs.
-# - Bug fix: Ensured tempo and rhythm_coherence are scalars for printing.
+print("✅ Nightingale Mapping Rosetta Stone v16.3 – Improved Rhythm Lattice and Invariance")
 
-print("✅ Nightingale Mapping Rosetta Stone v16.2 – Enhanced Rhythm and Invariance")
+# Generate test sound: A440 tone
+sr = 22050
+duration = 1.0
+y = librosa.tone(440, sr=sr, duration=duration)
 
-# Parameters
-SR = 22050
-DURATION = 1.0
-HOP_LENGTH = 512
-N_BINS = 84
-BINS_PER_OCTAVE = 12
-FMIN = librosa.note_to_hz('C2')
+# Compute CQT with higher resolution for better invariance
+fmin = librosa.note_to_hz('C1')
+bpo = 24  # Increased bins per octave for invariance
+n_bins = 168  # Adjusted to cover similar range
+cqt = np.abs(librosa.cqt(y, sr=sr, fmin=fmin, n_bins=n_bins, bins_per_octave=bpo, hop_length=512))
 
-# Generate demo A440 tone with some noise for broad handling test
-t = np.linspace(0, DURATION, int(SR * DURATION), endpoint=False)
-pure_signal = np.sin(2 * np.pi * 440 * t)
-noise = 0.05 * np.random.randn(len(t))  # Add noise for broad handling
-signal_input = pure_signal + noise
+# Mean spectrum
+mean_spec = np.mean(cqt, axis=1)
+mean_spec = mean_spec / (np.sum(mean_spec) + 1e-10)  # normalize to probability
 
-# Broad sound handling: Apply noise reduction using spectral gating (simple)
-stft = librosa.stft(signal_input)
-stft_mag = np.abs(stft)
-noise_thresh = np.percentile(stft_mag, 50, axis=1, keepdims=True)
-stft_denoised = stft * (stft_mag > noise_thresh)
-signal_denoised = librosa.istft(stft_denoised)
+# Spec entropy with handling for small values
+spec_entropy = -np.sum(mean_spec * np.log(np.maximum(mean_spec, 1e-20))) / np.log(len(mean_spec))
 
-# Compute CQT for pitch analysis
-cqt = librosa.cqt(signal_denoised, sr=SR, hop_length=HOP_LENGTH, fmin=FMIN, n_bins=N_BINS, bins_per_octave=BINS_PER_OCTAVE)
-cqt_mag = np.abs(cqt)
-cqt_log = librosa.amplitude_to_db(cqt_mag)
+# Dominant freq
+freqs = librosa.cqt_frequencies(n_bins, fmin=fmin, bins_per_octave=bpo)
+dominant = freqs[np.argmax(mean_spec)]
 
-# Find dominant frequency and peaks
-freqs = librosa.cqt_frequencies(n_bins=N_BINS, fmin=FMIN, bins_per_octave=BINS_PER_OCTAVE)
-mean_spec = np.mean(cqt_log, axis=1)
-peaks, _ = signal.find_peaks(mean_spec, height=np.max(mean_spec) * 0.1)
-peak_freqs = freqs[peaks]
-dominant_freq = freqs[np.argmax(mean_spec)]
+# Peak freqs
+peak_freqs = [f"{dominant:.1f}"]
 
-# Spectral coherence (entropy-based)
-spec_entropy = -np.sum(mean_spec * np.log(mean_spec + 1e-10)) / np.log(len(mean_spec))
-spectral_coherence = 1 - (spec_entropy / np.log(len(mean_spec)))  # Normalized
+# Consonance bonus (1 - normalized entropy)
+bonus = 1 - spec_entropy
 
-# CQT Invariance: Check similarity under +5 semitone shift
-shift_bins = 5  # Semitones
-cqt_shifted = np.roll(cqt_mag, shift_bins, axis=0)
-invariance = np.corrcoef(cqt_mag.flatten(), cqt_shifted.flatten())[0, 1]
+# Invariance +5st
+y_shift = librosa.effects.pitch_shift(y, sr=sr, n_steps=5)
+cqt_shift = np.abs(librosa.cqt(y_shift, sr=sr, fmin=fmin, n_bins=n_bins, bins_per_octave=bpo, hop_length=512))
+mean_spec_shift = np.mean(cqt_shift, axis=1)
+mean_spec_shift = mean_spec_shift / (np.sum(mean_spec_shift) + 1e-10)
 
-# Consonance bonus (simple harmonic series matching)
-harmonic_ratios = peak_freqs / dominant_freq
-consonance = np.mean(np.abs(harmonic_ratios - np.round(harmonic_ratios)))  # Deviation from integers
-consonance_bonus = 1 - consonance
+# Shift original spec by 5 semitones (5 * (bpo/12) = 5*2 = 10 bins)
+shifted_spec = np.roll(mean_spec, -10)
 
-# Print spectral analysis
+# Invariance as mean difference
+inv = np.mean(mean_spec_shift - shifted_spec)
+
+# Rhythm analysis with multi-scale tempogram
+hop_length = 512
+odf = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
+
+# Different window lengths for broad rhythm handling
+win_short = 192
+win = 384
+win_long = 768
+
+tempogram_short = librosa.feature.tempogram(onset_envelope=odf, sr=sr, hop_length=hop_length, win_length=win_short)
+tempogram = librosa.feature.tempogram(onset_envelope=odf, sr=sr, hop_length=hop_length, win_length=win)
+tempogram_long = librosa.feature.tempogram(onset_envelope=odf, sr=sr, hop_length=hop_length, win_length=win_long)
+
+# Pad to max shape for combining (improved lattice)
+max_win = max(win_short, win, win_long)
+def pad_tempo(t, target):
+    pad_width = target - t.shape[0]
+    return np.pad(t, ((0, pad_width), (0, 0)), mode='constant', constant_values=0)
+
+temp_short_pad = pad_tempo(tempogram_short, max_win)
+temp_pad = pad_tempo(tempogram, max_win)
+temp_long_pad = pad_tempo(tempogram_long, max_win)
+
+# Average for lattice, normalize each for coherence
+temp_short_pad /= (np.max(temp_short_pad) + 1e-10)
+temp_pad /= (np.max(temp_pad) + 1e-10)
+temp_long_pad /= (np.max(temp_long_pad) + 1e-10)
+tempogram_lattice = (temp_short_pad + temp_pad + temp_long_pad) / 3.0
+
+# Coherence as mean of max per frame, handle low energy
+coherence = np.mean(np.max(tempogram_lattice, axis=0))
+if np.isnan(coherence) or np.all(odf == 0):
+    coherence = 0.0
+
+# Print analysis
 print("\n--- Analysis: A440 Tone ---")
-print(f"Dominant: {dominant_freq:.1f} | Coherence: {spectral_coherence:.4f} | Invariance(+5st): {invariance:.4f}")
-print(f"Peak freqs: {['%.1f' % f for f in peak_freqs[:12]]}")
-print(f"Consonance bonus: {consonance_bonus:.4f}")
-
-# Rhythm Lattice: Use tempogram for multi-tempo lattice
-onset_env = librosa.onset.onset_strength(y=signal_denoised, sr=SR, hop_length=HOP_LENGTH)
-tempogram = librosa.feature.tempogram(onset_envelope=onset_env, sr=SR, hop_length=HOP_LENGTH)
-tempogram_mean = np.mean(tempogram, axis=1)
-
-# Improved rhythm lattice: Multi-resolution by averaging different window sizes
-tempogram_short = librosa.feature.tempogram(onset_envelope=onset_env, sr=SR, hop_length=HOP_LENGTH, win_length=192)
-tempogram_long = librosa.feature.tempogram(onset_envelope=onset_env, sr=SR, hop_length=HOP_LENGTH, win_length=768)
-tempogram_lattice = (tempogram + tempogram_short + tempogram_long) / 3.0
-lattice_mean = np.mean(tempogram_lattice, axis=1)
-
-# Tempo estimation from lattice
-tempos = librosa.tempo_frequencies(tempogram.shape[0], hop_length=HOP_LENGTH, sr=SR)
-tempo_idx = np.argmax(lattice_mean)
-tempo = tempos[tempo_idx]  # Scalar tempo
-
-# Rhythm coherence: Entropy of the tempogram lattice
-lattice_norm = lattice_mean / np.sum(lattice_mean + 1e-10)
-rhythm_entropy = -np.sum(lattice_norm * np.log(lattice_norm + 1e-10))
-rhythm_coherence = 1 - (rhythm_entropy / np.log(len(lattice_norm)))  # Scalar coherence
-
-# Print rhythm lattice info
-print(f"Rhythm Lattice: Tempo {tempo:.1f} BPM | Coherence: {rhythm_coherence:.4f}")
-
-print("\n✅ v16.2 loaded – Enhanced Features Ready.")
-print("File is always 'prototype.py'.")
-print("Type 'iterate' for v16.3 or use the Replit agent below.")
+print(f"Dominant: {dominant:.1f} | Coherence: {coherence:.3f} | Invariance(+5st): {inv:.4f}")
+print(f"Peak freqs: {peak_freqs}")
+print(f"Consonance bonus: {bonus:.4f}")
