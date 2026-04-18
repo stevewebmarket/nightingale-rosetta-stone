@@ -3,50 +3,42 @@
 # Originator: Stephen OConnor (@nightingalemap) – The Nightingale Mapping
 # Date: April 17, 2026
 # Live Hub: https://github.com/stevewebmarket/nightingale-rosetta-stone
-# v16.4 – Improved Rhythm Lattice, Coherence, CQT Invariance, Broad Sound Handling
+# v16.4 – Fixed Tempo Estimation + Rhythm Lattice Improvements
 # =============================================================================
 
 import librosa
 import numpy as np
-import os
 
 def analyze_audio(file):
     y, sr = librosa.load(file, sr=22050)
     hop_length = 512
+    # Compute onset envelope
     onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
-    tempo = librosa.feature.rhythm.tempo(onset_envelope=onset_env, sr=sr, hop_length=hop_length, aggregate=np.median)
+    # Tempo estimation (fixed to use librosa.beat.tempo)
+    tempo = librosa.beat.tempo(onset_envelope=onset_env, sr=sr, hop_length=hop_length, aggregate=np.median)
+    print(f"Estimated tempo for {file}: {tempo} BPM")
     
-    # Improved rhythm lattice using tempogram for better coherence and broad sound handling
-    tempogram = librosa.feature.tempogram(onset_envelope=onset_env, sr=sr, hop_length=hop_length, win_length=384)
-    rhythm_lattice = np.mean(tempogram, axis=1)
-    rhythm_lattice /= np.max(rhythm_lattice) if np.max(rhythm_lattice) != 0 else 1.0
+    # Improved rhythm lattice: Compute tempogram for better rhythm representation
+    tempogram = librosa.feature.tempogram(onset_envelope=onset_env, sr=sr, hop_length=hop_length)
+    # Simple coherence measure: Autocorrelation of tempogram for rhythmic stability
+    tempogram_auto = librosa.util.autocorrelate(tempogram, axis=0)
+    coherence = np.mean(np.max(tempogram_auto, axis=0))
+    print(f"Rhythmic coherence for {file}: {coherence}")
     
-    # Improved coherent chroma profile using CENS for better invariance and coherence
-    tuning = librosa.estimate_tuning(y=y, sr=sr)
-    y_harm = librosa.effects.harmonic(y)
-    chroma_cens = librosa.feature.chroma_cens(y=y_harm, sr=sr, hop_length=hop_length, tuning=tuning, n_octaves=7, bins_per_octave=36)
-    coherent_chroma = np.mean(chroma_cens, axis=1)
-    coherent_chroma /= np.max(coherent_chroma) if np.max(coherent_chroma) != 0 else 1.0
+    # CQT for spectral features with invariance (log-frequency scaling)
+    cqt = librosa.cqt(y, sr=sr, hop_length=hop_length, n_bins=84, bins_per_octave=12)
+    cqt_mag = librosa.amplitude_to_db(np.abs(cqt))
+    # Invariance: Normalize for shift-invariance in octaves
+    cqt_norm = librosa.util.normalize(cqt_mag, axis=0)
+    print(f"CQT shape for {file}: {cqt_norm.shape}")
     
-    print(f"Analysis for {file}:")
-    print("  Estimated Tempo:", tempo)
-    print("  Rhythm Lattice Summary (first 5 values):", rhythm_lattice[:5])
-    print("  Coherent Chroma Profile:", coherent_chroma)
+    # Broad sound handling: Additional features for non-musical sounds (e.g., spectral centroid)
+    centroid = librosa.feature.spectral_centroid(y=y, sr=sr, hop_length=hop_length)
+    print(f"Average spectral centroid for {file}: {np.mean(centroid)} Hz")
 
+# List of available WAV files
 files = ['birdsong.wav', 'orchestra.wav', 'rock.wav']
 
-if not files:
-    # Fallback to synthetic test signals if no files
-    duration = 5.0
-    sr = 22050
-    t = np.linspace(0, duration, int(sr * duration), endpoint=False)
-    y = np.sin(2 * np.pi * 440 * t)  # Simple sine wave
-    file = 'synthetic.wav'
-    # Simulate saving and loading, but directly use y
-    analyze_audio(file)  # But actually, adapt to use y directly if needed
-else:
-    for file in files:
-        if os.path.exists(file):
-            analyze_audio(file)
-        else:
-            print(f"File {file} not found, skipping.")
+# Analyze each file
+for file in files:
+    analyze_audio(file)
